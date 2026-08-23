@@ -1,0 +1,16 @@
+einops>=0.6,<1
+# Task7 CUDA smoke uses the official cp38/torch2.3/cu118 wheel.  The host's
+# default CUDA toolkit is 11.3, so a source install cannot build this package.
+mamba-ssm @ https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu118torch2.3cxx11abiFALSE-cp38-cp38-linux_x86_64.whl
+h5py>=3.8,<4
+matplotlib>=3.7,<4
+numpy>=1.24,<2
+pandas>=1.5,<3
+pillow>=9.5,<12
+pyarrow>=10
+PyYAML>=6,<7
+reformer-pytorch>=1.4,<2
+scikit-learn>=1.2,<2
+scipy>=1.10,<2
+torch>=2.0
+tqdm>=4.65,<5
