@@ -26,6 +26,9 @@ EXPECTED_MODELS=(
     "TSMixer" "Pyraformer" "SegRNN" "Transformer"
     "LightTS" "Crossformer" "FreTS" "MICN"
 )
+EXPECTED_BASELINES=(
+    "Persistence" "SmartPersistence" "SeasonalPersistence" "Climatology"
+)
 
 # The horizon is either one output point or four physical hours. The latter
 # depends on the source sampling interval, not on a fixed number of points.
@@ -96,6 +99,19 @@ model_is_expected() {
     return 1
 }
 
+baseline_is_expected() {
+    local candidate="$1"
+    local baseline
+    for baseline in "${EXPECTED_BASELINES[@]}"; do
+        [[ "$candidate" == "$baseline" ]] && return 0
+    done
+    return 1
+}
+
+method_is_expected() {
+    model_is_expected "$1" || baseline_is_expected "$1"
+}
+
 MODEL_FILE="$TEMP_DIR/models.txt"
 if ! CUDA_VISIBLE_DEVICES="$GPU_0" \
     "$PYTHON" "$ROOT_DIR/run_time_series.py" --list-models >"$MODEL_FILE"; then
@@ -115,11 +131,33 @@ for index in "${!EXPECTED_MODELS[@]}"; do
     fi
 done
 
-# ==================== 把 64 个任务平均分给两张卡 ====================
+# Baseline discovery is independent of GPU discovery. Keep this invocation
+# device-free because baseline tasks always run on the CPU queue.
+BASELINE_FILE="$TEMP_DIR/baselines.txt"
+if ! "$PYTHON" "$ROOT_DIR/run_time_series.py" --list-baselines >"$BASELINE_FILE"; then
+    echo "无法读取经典基线列表" >&2
+    exit 2
+fi
+mapfile -t BASELINES <"$BASELINE_FILE"
+
+if (( ${#BASELINES[@]} != ${#EXPECTED_BASELINES[@]} )); then
+    echo "应有 ${#EXPECTED_BASELINES[@]} 个基线，实际读取到 ${#BASELINES[@]} 个" >&2
+    exit 2
+fi
+for index in "${!EXPECTED_BASELINES[@]}"; do
+    if [[ "${BASELINES[$index]}" != "${EXPECTED_BASELINES[$index]}" ]]; then
+        echo "基线列表顺序或名称不符合要求: ${BASELINES[*]}" >&2
+        exit 2
+    fi
+done
+
+# ==================== 把 64 个神经任务平均分给两张卡 ====================
 QUEUE_0="$TEMP_DIR/gpu-0-tasks.tsv"
 QUEUE_1="$TEMP_DIR/gpu-1-tasks.tsv"
+CPU_QUEUE="$TEMP_DIR/cpu-tasks.tsv"
 : >"$QUEUE_0"
 : >"$QUEUE_1"
+: >"$CPU_QUEUE"
 
 task_index=0
 for row in "${SETTING_ROWS[@]}"; do
@@ -141,7 +179,24 @@ for row in "${SETTING_ROWS[@]}"; do
         done
     done
 done
-EXPECTED_TASKS=$task_index
+EXPECTED_NEURAL_TASKS=$task_index
+
+baseline_task_index=0
+for row in "${SETTING_ROWS[@]}"; do
+    read -r setting_label seq_len horizon <<<"$row"
+    for dataset in "${DATASETS[@]}"; do
+        if ! pred_len="$(prediction_points "$dataset" "$horizon")"; then
+            exit 2
+        fi
+        for baseline in "${BASELINES[@]}"; do
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$setting_label" "$seq_len" "$pred_len" "$dataset" "$baseline" >>"$CPU_QUEUE"
+            baseline_task_index=$((baseline_task_index + 1))
+        done
+    done
+done
+EXPECTED_BASELINE_TASKS=$baseline_task_index
+EXPECTED_TASKS=$((EXPECTED_NEURAL_TASKS + EXPECTED_BASELINE_TASKS))
 
 # Load reusable rows before writing the new summary. A task is resumable only
 # when its previous row and completion manifest describe the exact current
@@ -200,10 +255,14 @@ completion_is_valid() {
         expected_test_limit="1"
     else
         expected_mode="full"
-        expected_epochs="$EPOCHS"
         expected_train_limit="0"
         expected_eval_limit="0"
         expected_test_limit="0"
+    fi
+    if baseline_is_expected "$expected_model"; then
+        expected_epochs="0"
+    elif [[ "$SMOKE" != "1" ]]; then
+        expected_epochs="$EPOCHS"
     fi
     [[ "$run_mode" == "$expected_mode" \
         && "$epochs" == "$expected_epochs" \
@@ -211,7 +270,10 @@ completion_is_valid() {
         && "$max_eval_steps" == "$expected_eval_limit" \
         && "$max_test_steps" == "$expected_test_limit" ]] || return 1
 
-    if [[ "$SMOKE" == "1" ]]; then
+    if baseline_is_expected "$expected_model"; then
+        [[ "$train_steps" == "0" && "$val_steps" == "0" \
+            && "$test_steps" =~ ^[1-9][0-9]*$ ]] || return 1
+    elif [[ "$SMOKE" == "1" ]]; then
         [[ "$train_steps" == "1" && "$val_steps" == "1" && "$test_steps" == "1" ]] || return 1
     else
         [[ "$train_steps" =~ ^[1-9][0-9]*$ \
@@ -263,7 +325,11 @@ load_resume_summary() {
             continue
         }
         expected_output_dir="$OUTPUT_ROOT_CANONICAL/$setting_label/$dataset/$model"
-        if ! model_is_expected "$model" || [[ "$output_dir" != "$expected_output_dir" ]]; then
+        if ! method_is_expected "$model" || [[ "$output_dir" != "$expected_output_dir" ]]; then
+            RESUME_INVALID_KEYS["$key"]=1
+            continue
+        fi
+        if baseline_is_expected "$model" && [[ "$launch_gpu" != "cpu" ]]; then
             RESUME_INVALID_KEYS["$key"]=1
             continue
         fi
@@ -346,23 +412,79 @@ run_gpu_queue() {
     done <"$queue_file"
 }
 
-# ==================== 同时启动 GPU 0 和 GPU 1 ====================
+# Baselines are evaluated serially in one CPU queue. Unset any inherited CUDA
+# visibility so a CPU task cannot accidentally claim a GPU.
+run_cpu_queue() {
+    local queue_file="$1"
+    local result_file="$2"
+    local setting_label seq_len pred_len dataset baseline output_dir log_file exit_code status
+    local key launch_gpu
+
+    : >"$result_file"
+    while IFS=$'\t' read -r setting_label seq_len pred_len dataset baseline; do
+        output_dir="$OUTPUT_ROOT_CANONICAL/$setting_label/$dataset/$baseline"
+        log_file="$output_dir/run.log"
+        mkdir -p "$output_dir"
+        launch_gpu="cpu"
+
+        if [[ "$RESUME" == "1" ]] \
+            && can_resume "$setting_label" "$seq_len" "$pred_len" "$dataset" "$baseline" "$output_dir"; then
+            key="$(resume_key "$setting_label" "$dataset" "$baseline")"
+            launch_gpu="${RESUME_PASS_LAUNCH_GPUS[$key]}"
+            echo "[跳过 CPU] $setting_label / $dataset / $baseline"
+            exit_code=0
+            status="PASS"
+        else
+            echo "[运行 CPU] $setting_label / $dataset / $baseline"
+            env -u CUDA_VISIBLE_DEVICES \
+                "$PYTHON" "$ROOT_DIR/run_time_series.py" \
+                --dataset "$dataset" \
+                --model "$baseline" \
+                --seq_len "$seq_len" \
+                --pred_len "$pred_len" \
+                --epochs "$EPOCHS" \
+                "${RUN_MODE_ARGS[@]}" \
+                --device cpu \
+                --output_dir "$output_dir" \
+                >"$log_file" 2>&1
+            exit_code=$?
+
+            if (( exit_code == 0 )); then
+                status="PASS"
+            else
+                status="FAIL"
+                echo "[失败 CPU] $setting_label / $dataset / $baseline，日志: $log_file" >&2
+            fi
+        fi
+
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$seq_len" "$pred_len" "$dataset" "$baseline" \
+            "$status" "$output_dir" "$exit_code" "$launch_gpu" \
+            >>"$result_file"
+    done <"$queue_file"
+}
+
+# ==================== 同时启动两张 GPU 和 CPU 队列 ====================
 RESULT_0="$TEMP_DIR/gpu-0-results.tsv"
 RESULT_1="$TEMP_DIR/gpu-1-results.tsv"
+RESULT_CPU="$TEMP_DIR/cpu-results.tsv"
 
 run_gpu_queue "$GPU_0" "$QUEUE_0" "$RESULT_0" &
 PID_0=$!
 run_gpu_queue "$GPU_1" "$QUEUE_1" "$RESULT_1" &
 PID_1=$!
+run_cpu_queue "$CPU_QUEUE" "$RESULT_CPU" &
+PID_CPU=$!
 
 worker_failed=0
 wait "$PID_0" || worker_failed=1
 wait "$PID_1" || worker_failed=1
+wait "$PID_CPU" || worker_failed=1
 
 # ==================== 汇总结果 ====================
 {
     printf '%s\n' "$SUMMARY_HEADER"
-    cat "$RESULT_0" "$RESULT_1"
+    cat "$RESULT_0" "$RESULT_1" "$RESULT_CPU"
 } >"$SUMMARY_PATH"
 
 result_count=$(($(wc -l <"$SUMMARY_PATH") - 1))

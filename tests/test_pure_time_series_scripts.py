@@ -40,6 +40,9 @@ EXPECTED_MODELS = (
     "TSMixer", "Pyraformer", "SegRNN", "Transformer",
     "LightTS", "Crossformer", "FreTS", "MICN",
 )
+EXPECTED_BASELINES = (
+    "Persistence", "SmartPersistence", "SeasonalPersistence", "Climatology",
+)
 
 
 def _fake_python(tmp_path: Path) -> Path:
@@ -55,6 +58,7 @@ import sys
 import time
 
 models = %r
+baselines = %r
 args = sys.argv[1:]
 record_path = Path(os.environ["FAKE_RECORD"])
 event = {
@@ -70,6 +74,15 @@ if "--list-models" in args:
     print("\\n".join(models))
     raise SystemExit(0)
 
+if "--list-baselines" in args:
+    event["kind"] = "list-baselines"
+    if os.environ.get("FAKE_DUPLICATE_BASELINES") == "1":
+        baselines = baselines[:-1] + (baselines[0],)
+    with record_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event) + "\\n")
+    print("\\n".join(baselines))
+    raise SystemExit(0)
+
 event["kind"] = "run"
 dataset = args[args.index("--dataset") + 1]
 model = args[args.index("--model") + 1]
@@ -81,6 +94,7 @@ event["seq_len"] = seq_len
 event["pred_len"] = pred_len
 gpu = os.environ.get("CUDA_VISIBLE_DEVICES")
 event["gpu"] = gpu
+is_baseline = model in baselines
 if (
     os.environ.get("FAKE_KILL_WORKER_MODEL") == model
     and os.environ.get("FAKE_FAIL_DATASET") == dataset
@@ -118,15 +132,24 @@ try:
             encoding="utf-8",
         )
         smoke = "--smoke" in args
-        epochs = 1 if smoke else (
+        epochs = 0 if is_baseline else (1 if smoke else (
             int(args[args.index("--epochs") + 1]) if "--epochs" in args else 1
+        ))
+        phase_steps = (
+            {"train": 0, "val": 0, "test": 1}
+            if is_baseline
+            else {"train": 1, "val": 1, "test": 1}
         )
-        phase_steps = {"train": 1, "val": 1, "test": 1}
+        max_train_steps = 1 if smoke else 0
+        max_eval_steps = 1 if smoke else 0
+        max_test_steps = 1 if smoke else 0
         metrics = {
             "dataset": dataset,
             "model": model,
             "seq_len": seq_len,
             "pred_len": pred_len,
+            "method_type": "baseline" if is_baseline else "neural",
+            "training_skipped": is_baseline,
             "best_epoch": 0,
             "best_val_loss": 0.0,
             "test_loss_normalized": 0.0,
@@ -143,7 +166,7 @@ try:
             },
             "run_mode": "smoke" if smoke else "full",
             "epochs": epochs,
-            "limits": {"train": 1 if smoke else 0, "val": 1 if smoke else 0, "test": 1 if smoke else 0},
+            "limits": {"train": max_train_steps, "val": max_eval_steps, "test": max_test_steps},
             "history": [],
         }
         (output_dir / "metrics.json").write_text(
@@ -160,8 +183,9 @@ try:
         manifest_values = [
             "1", dataset, model, str(seq_len), str(pred_len), str(output_dir.resolve()),
             "smoke" if smoke else "full", str(epochs),
-            "1" if smoke else "0", "1" if smoke else "0", "1" if smoke else "0",
-            "1", "1", "1", sha256(output_dir / "best.pt"),
+            str(max_train_steps), str(max_eval_steps), str(max_test_steps),
+            str(phase_steps["train"]), str(phase_steps["val"]), str(phase_steps["test"]),
+            sha256(output_dir / "best.pt"),
             sha256(output_dir / "predictions.csv"), sha256(output_dir / "metrics.json"),
         ]
         manifest = output_dir / "completion.tsv"
@@ -179,7 +203,7 @@ finally:
     with record_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event) + "\\n")
 raise SystemExit(event["exit_code"])
-""" % (EXPECTED_MODELS,),
+""" % (EXPECTED_MODELS, EXPECTED_BASELINES),
         encoding="utf-8",
     )
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
@@ -237,26 +261,38 @@ def _task_output_dir(output_root: Path, task=(24, 1, "skippd_luoyang", "TSMixer"
     return output_root / setting / dataset / model
 
 
-def test_smoke_expands_exactly_64_power_runs_with_required_arguments(tmp_path):
+def test_smoke_expands_exactly_96_runs_with_gpu_neural_and_cpu_baseline_queues(tmp_path):
     result, record_path, output_root = _run_smoke(tmp_path)
 
     assert result.returncode == 0, result.stdout + result.stderr
     events = _events(record_path)
     assert [event["kind"] for event in events].count("list") == 1
+    assert [event["kind"] for event in events].count("list-baselines") == 1
     runs = [event for event in events if event["kind"] == "run"]
-    assert len(runs) == 64
+    assert len(runs) == 96
+    neural_runs = [event for event in runs if event["model"] in EXPECTED_MODELS]
+    baseline_runs = [event for event in runs if event["model"] in EXPECTED_BASELINES]
+    assert len(neural_runs) == 64
+    assert len(baseline_runs) == 32
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
-        for event in runs
+        for event in neural_runs
     } == {(seq_len, pred_len, dataset, model)
           for seq_len, pred_len, dataset in EXPECTED_TASKS
           for model in EXPECTED_MODELS}
-    assert {event["gpu"] for event in runs} == {"0", "1"}
-    assert sum(event["gpu"] == "0" for event in runs) == 32
-    assert sum(event["gpu"] == "1" for event in runs) == 32
+    assert {
+        (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
+        for event in baseline_runs
+    } == {(seq_len, pred_len, dataset, baseline)
+          for seq_len, pred_len, dataset in EXPECTED_TASKS
+          for baseline in EXPECTED_BASELINES}
+    assert {event["gpu"] for event in neural_runs} == {"0", "1"}
+    assert sum(event["gpu"] == "0" for event in neural_runs) == 32
+    assert sum(event["gpu"] == "1" for event in neural_runs) == 32
+    assert all(event["gpu"] is None for event in baseline_runs)
     assert all(not event.get("overlap", False) for event in runs)
-    gpu_zero = [event for event in runs if event["gpu"] == "0"]
-    gpu_one = [event for event in runs if event["gpu"] == "1"]
+    gpu_zero = [event for event in neural_runs if event["gpu"] == "0"]
+    gpu_one = [event for event in neural_runs if event["gpu"] == "1"]
     assert any(
         left["started_at"] < right["finished_at"]
         and right["started_at"] < left["finished_at"]
@@ -266,13 +302,19 @@ def test_smoke_expands_exactly_64_power_runs_with_required_arguments(tmp_path):
     assert all("--smoke" in event["args"] for event in runs)
     assert all(
         event["args"][event["args"].index("--device") + 1] == "cuda:0"
-        for event in runs
+        for event in neural_runs
+    )
+    assert all(
+        event["args"][event["args"].index("--device") + 1] == "cpu"
+        and "cuda" not in event["args"]
+        for event in baseline_runs
     )
     output_dirs = [
         event["args"][event["args"].index("--output_dir") + 1]
         for event in runs
     ]
-    assert len(set(output_dirs)) == 64
+    assert len(output_dirs) == 96
+    assert len(set(output_dirs)) == 96
     assert {
         Path(path).resolve().relative_to(output_root.resolve()).parts[0]
         for path in output_dirs
@@ -292,7 +334,13 @@ def test_smoke_expands_exactly_64_power_runs_with_required_arguments(tmp_path):
         metrics = json.loads((task_dir / "metrics.json").read_text(encoding="utf-8"))
         assert metrics["metrics_original_power_units"]["nmae"] is not None
         assert metrics["metrics_original_power_units"]["nrmse"] is not None
-        assert metrics["phase_steps"] == {"train": 1, "val": 1, "test": 1}
+        if metrics["model"] in EXPECTED_BASELINES:
+            assert metrics["method_type"] == "baseline"
+            assert metrics["training_skipped"] is True
+            assert metrics["epochs"] == 0
+            assert metrics["phase_steps"] == {"train": 0, "val": 0, "test": 1}
+        else:
+            assert metrics["phase_steps"] == {"train": 1, "val": 1, "test": 1}
         manifest_rows = (task_dir / "completion.tsv").read_text(encoding="utf-8").splitlines()
         assert len(manifest_rows) == 2
         assert manifest_rows[0].split("\t")[0:5] == [
@@ -305,8 +353,12 @@ def test_smoke_expands_exactly_64_power_runs_with_required_arguments(tmp_path):
         "seq_len", "pred_len", "dataset", "model", "status", "output_dir",
         "exit_code", "launch_gpu",
     ]
-    assert len(rows[1:]) == 64
+    assert len(rows[1:]) == 96
     assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
+    assert len({tuple(row.split("\t")[:4]) for row in rows[1:]}) == 96
+    assert Counter(row.split("\t")[7] for row in rows[1:]) == Counter(
+        {"0": 32, "1": 32, "cpu": 32}
+    )
 
 
 def test_summary_persists_launch_gpu_provenance_matching_cuda_assignment(tmp_path):
@@ -323,17 +375,21 @@ def test_summary_persists_launch_gpu_provenance_matching_cuda_assignment(tmp_pat
         "seq_len", "pred_len", "dataset", "model", "status", "output_dir",
         "exit_code", "launch_gpu",
     ]
-    assert len(rows[1:]) == 64
+    assert len(rows[1:]) == 96
 
     summary_launch_gpu_counts = Counter()
     for row in rows[1:]:
         fields = row.split("\t")
         task = (int(fields[0]), int(fields[1]), fields[2], fields[3])
         launch_gpu = fields[7]
-        assert launch_gpu in {"0", "1"}
-        assert launch_gpu == runs[task]["cuda_visible_devices"]
+        if task[3] in EXPECTED_BASELINES:
+            assert launch_gpu == "cpu"
+            assert runs[task]["cuda_visible_devices"] is None
+        else:
+            assert launch_gpu in {"0", "1"}
+            assert launch_gpu == runs[task]["cuda_visible_devices"]
         summary_launch_gpu_counts[launch_gpu] += 1
-    assert summary_launch_gpu_counts == Counter({"0": 32, "1": 32})
+    assert summary_launch_gpu_counts == Counter({"0": 32, "1": 32, "cpu": 32})
 
 
 def test_legacy_summary_without_launch_gpu_is_incompatible_with_resume(tmp_path):
@@ -352,7 +408,7 @@ def test_legacy_summary_without_launch_gpu_is_incompatible_with_resume(tmp_path)
     second, record_path, _ = _run_smoke(tmp_path, resume=True)
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 128
+    assert len(runs) == 192
 
 
 def test_legacy_eight_column_gpu_header_is_incompatible_with_resume(tmp_path):
@@ -371,7 +427,7 @@ def test_legacy_eight_column_gpu_header_is_incompatible_with_resume(tmp_path):
     second, record_path, _ = _run_smoke(tmp_path, resume=True)
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 128
+    assert len(runs) == 192
 
 
 def test_resume_preserves_prior_launch_gpu_when_assignment_changes(tmp_path):
@@ -385,10 +441,12 @@ def test_resume_preserves_prior_launch_gpu_when_assignment_changes(tmp_path):
     )
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 64
+    assert len(runs) == 96
 
     rows = (output_root / "smoke_summary.tsv").read_text().splitlines()[1:]
-    assert Counter(row.split("\t")[7] for row in rows) == Counter({"0": 32, "1": 32})
+    assert Counter(row.split("\t")[7] for row in rows) == Counter(
+        {"0": 32, "1": 32, "cpu": 32}
+    )
 
 
 @pytest.mark.parametrize("mutation", [
@@ -445,14 +503,78 @@ def test_resume_rejects_incomplete_or_mismatched_completion_artifacts(tmp_path, 
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
     expected_retries = 2 if mutation == "summary_identity" else 1
-    assert len(runs) == 64 + expected_retries
+    assert len(runs) == 96 + expected_retries
     retried_tasks = {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
-        for event in runs[64:]
+        for event in runs[96:]
     }
     assert (24, 1, "skippd_luoyang", "TSMixer") in retried_tasks
     if mutation == "summary_identity":
         assert (24, 1, "pvod_station00_ylj", "TSMixer") in retried_tasks
+
+
+def test_resume_skips_valid_baseline_completion_artifacts(tmp_path):
+    first, record_path, output_root = _run_smoke(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    second, record_path, _ = _run_smoke(
+        tmp_path,
+        resume=True,
+        extra_environment={"GPUS": "2 3"},
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 96
+    assert sum(event["model"] in EXPECTED_BASELINES for event in runs) == 32
+
+    rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()[1:]
+    baseline_rows = [row.split("\t") for row in rows if row.split("\t")[3] in EXPECTED_BASELINES]
+    assert len(baseline_rows) == 32
+    assert {row[7] for row in baseline_rows} == {"cpu"}
+
+
+@pytest.mark.parametrize("mutation", [
+    "metrics",
+    "predictions",
+    "checkpoint",
+    "steps",
+    "identity",
+])
+def test_resume_rejects_corrupt_baseline_completion_artifacts(tmp_path, mutation):
+    first, record_path, output_root = _run_smoke(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+    task_dir = _task_output_dir(output_root, (24, 1, "skippd_luoyang", "Persistence"))
+
+    if mutation == "metrics":
+        (task_dir / "metrics.json").write_text("not json", encoding="utf-8")
+    elif mutation == "predictions":
+        with (task_dir / "predictions.csv").open("ab") as handle:
+            handle.write(b"tampered\\n")
+    elif mutation == "checkpoint":
+        (task_dir / "best.pt").write_bytes(b"tampered checkpoint")
+    else:
+        manifest = task_dir / "completion.tsv"
+        rows = [line.split("\t") for line in manifest.read_text(encoding="utf-8").splitlines()]
+        if mutation == "steps":
+            rows[1][11] = "1"
+        else:
+            rows[1][2] = "SmartPersistence"
+        manifest.write_text(
+            "\n".join("\t".join(row) for row in rows) + "\n", encoding="utf-8"
+        )
+
+    second, record_path, _ = _run_smoke(
+        tmp_path,
+        resume=True,
+        extra_environment={"GPUS": "2 3"},
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 97
+    assert {
+        (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
+        for event in runs[96:]
+    } == {(24, 1, "skippd_luoyang", "Persistence")}
 
 
 def test_resume_rejects_duplicate_summary_identity(tmp_path):
@@ -466,7 +588,7 @@ def test_resume_rejects_duplicate_summary_identity(tmp_path):
     second, record_path, _ = _run_smoke(tmp_path, resume=True)
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 65
+    assert len(runs) == 97
 
 
 def test_resume_rejects_completion_from_different_full_epoch_setting(tmp_path):
@@ -485,14 +607,14 @@ def test_resume_rejects_completion_from_different_full_epoch_setting(tmp_path):
     )
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 128
+    assert len(runs) == 160
 
 
 def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_path):
     first, record_path, output_root = _run_smoke(tmp_path, fail_model="TSMixer")
     assert first.returncode != 0
     first_runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(first_runs) == 64
+    assert len(first_runs) == 96
     failed_event = next(
         event for event in first_runs
         if (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
@@ -513,8 +635,8 @@ def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_p
     )
     assert second.returncode == 0, second.stdout + second.stderr
     all_runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(all_runs) == 68
-    retried = all_runs[64:]
+    assert len(all_runs) == 100
+    retried = all_runs[96:]
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
         for event in retried
@@ -526,8 +648,8 @@ def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_p
     }
 
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert len(rows[1:]) == 64
-    assert len({tuple(row.split("\t")[:4]) for row in rows[1:]}) == 64
+    assert len(rows[1:]) == 96
+    assert len({tuple(row.split("\t")[:4]) for row in rows[1:]}) == 96
     assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
 
     summary_gpu = {}
@@ -545,11 +667,13 @@ def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_p
     retried_tasks = set(retried_gpu)
     assert retried_tasks
     for task, prior_gpu in first_gpu.items():
-        expected_gpu = retried_gpu[task] if task in retried_tasks else prior_gpu
+        expected_gpu = retried_gpu[task] if task in retried_tasks else (
+            "cpu" if prior_gpu is None else prior_gpu
+        )
         assert summary_gpu[task] == expected_gpu
 
 
-def test_full_runner_uses_same_64_tasks_without_smoke_flag(tmp_path):
+def test_full_runner_uses_same_96_tasks_without_smoke_flag(tmp_path):
     result, record_path, output_root = _run_smoke(
         tmp_path,
         script_name="scripts/run_all_pure_time_series.sh",
@@ -557,17 +681,25 @@ def test_full_runner_uses_same_64_tasks_without_smoke_flag(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 64
+    assert len(runs) == 96
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
         for event in runs
-    } == {(seq_len, pred_len, dataset, model)
-          for seq_len, pred_len, dataset in EXPECTED_TASKS
-          for model in EXPECTED_MODELS}
+    } == ({(seq_len, pred_len, dataset, model)
+           for seq_len, pred_len, dataset in EXPECTED_TASKS
+           for model in EXPECTED_MODELS}
+          | {(seq_len, pred_len, dataset, baseline)
+             for seq_len, pred_len, dataset in EXPECTED_TASKS
+             for baseline in EXPECTED_BASELINES})
     assert all("--smoke" not in event["args"] for event in runs)
-    assert all("--epochs" in event["args"] for event in runs)
+    assert all("--epochs" in event["args"] for event in runs if event["model"] in EXPECTED_MODELS)
+    assert all(
+        event["args"][event["args"].index("--device") + 1]
+        == ("cpu" if event["model"] in EXPECTED_BASELINES else "cuda:0")
+        for event in runs
+    )
     rows = (output_root / "run_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert len(rows[1:]) == 64
+    assert len(rows[1:]) == 96
     assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
 
 
@@ -576,6 +708,18 @@ def test_full_runner_rejects_duplicate_model_names(tmp_path):
         tmp_path,
         script_name="scripts/run_all_pure_time_series.sh",
         extra_environment={"FAKE_DUPLICATE_MODELS": "1"},
+    )
+
+    assert result.returncode == 2
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert runs == []
+
+
+def test_full_runner_rejects_duplicate_baseline_names(tmp_path):
+    result, record_path, _ = _run_smoke(
+        tmp_path,
+        script_name="scripts/run_all_pure_time_series.sh",
+        extra_environment={"FAKE_DUPLICATE_BASELINES": "1"},
     )
 
     assert result.returncode == 2
@@ -592,7 +736,7 @@ def test_full_runner_fails_if_a_gpu_worker_stops_early(tmp_path):
 
     assert result.returncode != 0
     rows = (output_root / "run_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert len(rows[1:]) < 64
+    assert len(rows[1:]) < 96
 
 
 @pytest.mark.parametrize("script_name", [
