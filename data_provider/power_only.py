@@ -123,7 +123,10 @@ class PowerOnlyParquetDataset(Dataset):
 
         candidates = self._valid_candidates()
         test_start = pd.Timestamp(self.time_config["test_start_timestamp"])
-        pre_test_candidates = candidates[candidates < test_start]
+        horizon = self.pred_len * self.forecast_step
+        pre_test_candidates = candidates[
+            (candidates < test_start) & (candidates + horizon < test_start)
+        ]
         validation_fraction = float(self.time_config["validation_fraction"])
         if not 0.0 <= validation_fraction <= 1.0:
             raise ValueError("validation_fraction must be between 0 and 1")
@@ -134,7 +137,6 @@ class PowerOnlyParquetDataset(Dataset):
             else test_start
         )
 
-        horizon = self.pred_len * self.forecast_step
         if flag == "train":
             selected = candidates[
                 (candidates < self.validation_start)

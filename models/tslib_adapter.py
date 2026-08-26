@@ -1,9 +1,8 @@
-"""Power-only input and output adapters for the copied TSLib models.
+"""Adapters for normalized power batches and the copied TSLib models.
 
-The dataset batches contain several modalities, but a forecasting model in
-this integration receives only the normalized power history.  In particular,
-the model-input helpers below deliberately have no target argument: future
-targets are used by the loss/evaluation path, never to construct model input.
+The only model input is historical normalized power with shape
+``[batch, seq_len, 1]``. Future targets are used by the loss/evaluation path,
+never to construct model input.
 """
 
 from __future__ import annotations
@@ -45,9 +44,10 @@ def _validate_history(x: Tensor) -> Tensor:
         raise ValueError(
             f"expected x with shape [batch, seq_len, channels], got {tuple(x.shape)}"
         )
-    if x.shape[0] < 1 or x.shape[1] < 1 or x.shape[2] < 1:
+    if x.shape[0] < 1 or x.shape[1] < 1 or x.shape[2] != 1:
         raise ValueError(
-            f"x must have positive batch, sequence, and channel dimensions, got {tuple(x.shape)}"
+            "x must have positive batch/sequence dimensions and exactly one power channel, "
+            f"got {tuple(x.shape)}"
         )
     return x
 
@@ -62,11 +62,8 @@ def _nonnegative_length(value: int, *, name: str, allow_zero: bool = False) -> i
     return value
 
 
-def _target_mask(batch, target: Tensor, device: torch.device) -> Tensor:
-    if isinstance(batch, Mapping):
-        metadata = batch
-    else:
-        metadata = batch[9] if len(batch) > 9 and isinstance(batch[9], Mapping) else {}
+def _target_mask(batch: Mapping, target: Tensor, device: torch.device) -> Tensor:
+    metadata = batch
     value = metadata.get("target_mask")
     if value is None:
         return torch.ones(target.shape[:2], dtype=torch.bool, device=device)
@@ -86,28 +83,26 @@ def power_only_batch(batch, device: torch.device) -> PowerBatch:
     """Extract normalized power tensors from a collated mapping.
 
     The dedicated dataset emits ``history``, ``target``, ``target_mask``, and
-    ``issue_time_ns``.  The legacy tuple layout remains accepted for focused
-    compatibility tests, but no tuple-only data is created by the new loader.
+    ``issue_time_ns``. Only this mapping contract is accepted.
     """
 
-    if isinstance(batch, Mapping):
-        if "history" not in batch or "target" not in batch:
-            raise ValueError("dataset batch must contain history and target")
-        raw_x, raw_y = batch["history"], batch["target"]
-    elif isinstance(batch, (tuple, list)) and len(batch) >= 2:
-        raw_x, raw_y = batch[0], batch[1]
-    else:
-        raise ValueError("dataset batch must contain at least seq_x and seq_y")
+    if not isinstance(batch, Mapping):
+        raise ValueError("dataset batch must be a mapping")
+    if "history" not in batch or "target" not in batch:
+        raise ValueError("dataset batch mapping must contain history and target")
+    raw_x, raw_y = batch["history"], batch["target"]
 
     batch_x = _as_float_tensor(raw_x, name="history", device=device)
     batch_y = _as_float_tensor(raw_y, name="target", device=device)
-    if batch_x.ndim != 3 or batch_x.shape[-1] < 1:
+    if batch_x.ndim != 3 or batch_x.shape[-1] != 1:
         raise ValueError(
-            f"expected [B, seq_len, channels] input, got {tuple(batch_x.shape)}"
+            "expected [B, seq_len, 1] history with one power channel, "
+            f"got {tuple(batch_x.shape)}"
         )
-    if batch_y.ndim != 3 or batch_y.shape[-1] < 1:
+    if batch_y.ndim != 3 or batch_y.shape[-1] != 1:
         raise ValueError(
-            f"expected [B, pred_len, channels] target, got {tuple(batch_y.shape)}"
+            "expected [B, pred_len, 1] target with one power channel, "
+            f"got {tuple(batch_y.shape)}"
         )
     if batch_x.shape[0] != batch_y.shape[0]:
         raise ValueError(
@@ -116,8 +111,8 @@ def power_only_batch(batch, device: torch.device) -> PowerBatch:
         )
 
     return PowerBatch(
-        x=batch_x[..., :1],
-        y=batch_y[..., :1],
+        x=batch_x,
+        y=batch_y,
         mask=_target_mask(batch, batch_y, device),
     )
 
@@ -143,36 +138,16 @@ def prepare_model_inputs(
 ) -> Tuple[Tensor, Any, Tensor, Any]:
     """Prepare the four positional inputs used by TSLib forecasting models.
 
-    The only source for both encoder and decoder values is ``x``.  For the
-    two models with structural mark/padding requirements, all synthetic
-    compatibility values are zeros or repeated *historical* power values.
+    The only source for both encoder and decoder values is ``x``. All models
+    receive the same power-only positional input contract.
     """
 
     x = _validate_history(x)
     label_len = _nonnegative_length(label_len, name="label_len", allow_zero=True)
     pred_len = _nonnegative_length(pred_len, name="pred_len")
 
-    # Enforce the power-only contract even when a caller bypasses
-    # ``power_only_batch`` and supplies extra historical channels directly.
-    x_model = x if x.shape[-1] == 1 else x[..., :1]
-    if model_name == "MultiPatchFormer":
-        model_seq_len = 32
-        if x_model.shape[1] < model_seq_len:
-            pad_len = model_seq_len - x_model.shape[1]
-            left_pad = x_model[:, :1, :].expand(-1, pad_len, -1)
-            x_model = torch.cat((left_pad, x_model), dim=1)
-        elif x_model.shape[1] > model_seq_len:
-            x_model = x_model[:, -model_seq_len:, :]
-        label_len = min(label_len, model_seq_len)
-
-    x_dec = decoder_from_history(x_model, label_len, pred_len)
-
-    if model_name == "TemporalFusionTransformer":
-        x_mark_enc = x_model.new_zeros((x_model.shape[0], x_model.shape[1], 4))
-        x_mark_dec = x_model.new_zeros((x_model.shape[0], label_len + pred_len, 4))
-        return x_model, x_mark_enc, x_dec, x_mark_dec
-
-    return x_model, None, x_dec, None
+    x_dec = decoder_from_history(x, label_len, pred_len)
+    return x, None, x_dec, None
 
 
 def normalize_forecast(

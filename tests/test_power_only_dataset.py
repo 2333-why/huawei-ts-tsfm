@@ -9,7 +9,7 @@ import pytest
 from torch.utils.data import DataLoader
 
 from data_provider.power_only import PowerOnlyParquetDataset
-from models.tslib_adapter import power_only_batch
+from models.tslib_adapter import power_only_batch, prepare_model_inputs
 
 
 def _write_power_fixture(
@@ -163,3 +163,106 @@ def test_dataloader_collation_matches_power_only_batch_contract(tmp_path):
     assert result.y.shape == (2, 2, 1)
     assert result.mask.shape == (2, 2)
     assert result.mask.tolist() == [[True, True], [True, True]]
+
+
+def test_validation_split_ignores_test_window_timestamp_availability(tmp_path):
+    values = [
+        4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+        14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0,
+        24.0, 25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0, 33.0,
+        34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0, 41.0, 42.0, 43.0,
+    ]
+    complete_root = tmp_path / "complete"
+    incomplete_root = tmp_path / "incomplete"
+    complete_root.mkdir()
+    incomplete_root.mkdir()
+    kwargs = {
+        "interval_minutes": 5,
+        "values": values,
+        "test_start": "2025-01-01 01:00:00",
+        "test_end": "2025-01-01 01:20:00",
+    }
+    complete = PowerOnlyParquetDataset(
+        _write_power_fixture(complete_root, **kwargs),
+        "train",
+        history_points=2,
+        forecast_steps=2,
+    )
+    incomplete = PowerOnlyParquetDataset(
+        _write_power_fixture(
+            incomplete_root,
+            **kwargs,
+            missing_timestamps=("2025-01-01 01:00:00",),
+        ),
+        "train",
+        history_points=2,
+        forecast_steps=2,
+    )
+
+    assert incomplete.validation_start == complete.validation_start
+    assert incomplete.train_mean == pytest.approx(complete.train_mean)
+
+
+def test_each_split_keeps_forecast_horizon_inside_its_boundary(synthetic_power_config):
+    history_points = 2
+    forecast_steps = 2
+    train = PowerOnlyParquetDataset(
+        synthetic_power_config, "train", history_points, forecast_steps
+    )
+    validation = PowerOnlyParquetDataset(
+        synthetic_power_config, "val", history_points, forecast_steps
+    )
+    test = PowerOnlyParquetDataset(
+        synthetic_power_config, "test", history_points, forecast_steps
+    )
+    horizon = forecast_steps * test.forecast_step
+    train_start = pd.Timestamp(train.time_config["train_start_timestamp"])
+    test_start = pd.Timestamp(test.time_config["test_start_timestamp"])
+    test_end = pd.Timestamp(test.time_config["test_end_exclusive_timestamp"])
+
+    assert all(
+        train_start <= issue < train.validation_start
+        and issue + horizon < train.validation_start
+        for issue in pd.to_datetime(train.sample_times)
+    )
+    assert all(
+        train.validation_start <= issue < test_start
+        and issue + horizon < test_start
+        for issue in pd.to_datetime(validation.sample_times)
+    )
+    assert all(
+        test_start <= issue < test_end
+        and issue + horizon < test_end
+        for issue in pd.to_datetime(test.sample_times)
+    )
+
+
+def test_power_only_batch_rejects_legacy_tuple_and_multichannel_mapping():
+    with pytest.raises(ValueError, match="mapping"):
+        power_only_batch(
+            (np.zeros((1, 2, 1), dtype=np.float32), np.zeros((1, 1, 1), dtype=np.float32)),
+            device="cpu",
+        )
+    with pytest.raises(ValueError, match="one power channel"):
+        power_only_batch(
+            {
+                "history": np.zeros((1, 2, 2), dtype=np.float32),
+                "target": np.zeros((1, 1, 1), dtype=np.float32),
+                "target_mask": np.ones((1, 1), dtype=bool),
+            },
+            device="cpu",
+        )
+
+
+def test_prepare_model_inputs_rejects_multichannel_history_and_special_models():
+    with pytest.raises(ValueError, match="one power channel"):
+        prepare_model_inputs(
+            "Transformer", np.zeros((1, 2, 2), dtype=np.float32), label_len=1, pred_len=1
+        )
+
+    history = np.zeros((1, 2, 1), dtype=np.float32)
+    inputs = prepare_model_inputs("MultiPatchFormer", history, label_len=1, pred_len=1)
+    assert inputs[0].shape == (1, 2, 1)
+    assert inputs[1] is None
+    assert inputs[2].shape == (1, 2, 1)
+    assert inputs[3] is None

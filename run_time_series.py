@@ -1,9 +1,8 @@
 """Train and evaluate power-only time-series forecasting models.
 
-The existing Parquet adapters return several modalities for the multimodal
-pipeline. This entry point deliberately consumes only the first time-series
-channel (normalized power) and never forwards time marks or privileged data to
-the model.
+The dataset emits normalized historical power with shape ``[B, seq_len, 1]``.
+The runner forwards only that power channel and never forwards images, weather,
+calendar marks, privileged data, or future targets to a model.
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ import csv
 import json
 import math
 import random
-from collections.abc import Mapping
 from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,23 +107,6 @@ def _build_model(args, dataset):
     return build_power_model(args.model, args, dataset)
 
 
-def _as_target_mask(metadata, target: torch.Tensor) -> torch.Tensor:
-    mask = metadata.get("target_mask") if isinstance(metadata, Mapping) else None
-    if mask is None:
-        return torch.ones(target.shape[:-1], dtype=torch.bool, device=target.device)
-    mask = torch.as_tensor(mask, device=target.device, dtype=torch.bool)
-    if mask.ndim == target.ndim:
-        mask = mask[..., 0]
-    return mask
-
-
-def _power_only_batch(batch, device: torch.device):
-    """Compatibility wrapper returning the historical tuple shape."""
-
-    result = power_only_batch(batch, device)
-    return result.x, result.y, result.mask
-
-
 def _masked_mse(prediction, target, mask):
     mask = mask.unsqueeze(-1).to(dtype=prediction.dtype)
     denominator = mask.sum()
@@ -179,7 +160,8 @@ def _run_epoch(
     limit = _step_limit(max_steps)
     batches = loader if limit is None else islice(loader, limit)
     for batch in batches:
-        batch_x, batch_y, target_mask = _power_only_batch(batch, device)
+        power_batch = power_only_batch(batch, device)
+        batch_x, batch_y, target_mask = power_batch.x, power_batch.y, power_batch.mask
         effective_label_len = batch_x.shape[1] if label_len is None else int(label_len)
         effective_pred_len = batch_y.shape[1] if pred_len is None else int(pred_len)
         if training:
@@ -222,7 +204,8 @@ def _collect_predictions(
     limit = _step_limit(max_steps)
     batches = loader if limit is None else islice(loader, limit)
     for batch in batches:
-        batch_x, batch_y, target_mask = _power_only_batch(batch, device)
+        power_batch = power_only_batch(batch, device)
+        batch_x, batch_y, target_mask = power_batch.x, power_batch.y, power_batch.mask
         effective_label_len = batch_x.shape[1] if label_len is None else int(label_len)
         effective_pred_len = batch_y.shape[1] if pred_len is None else int(pred_len)
         prediction = forward_power_model(
@@ -232,10 +215,7 @@ def _collect_predictions(
         predictions.append(prediction.detach().cpu().numpy())
         targets.append(batch_y.detach().cpu().numpy())
         masks.append(target_mask.detach().cpu().numpy())
-        metadata = batch if isinstance(batch, Mapping) else (
-            batch[9] if len(batch) > 9 and isinstance(batch[9], Mapping) else {}
-        )
-        issue = metadata.get("issue_time_ns")
+        issue = batch.get("issue_time_ns")
         if issue is None:
             issue = np.full(batch_y.shape[0], np.nan)
         issue_times.append(torch.as_tensor(issue).detach().cpu().numpy().reshape(-1))
