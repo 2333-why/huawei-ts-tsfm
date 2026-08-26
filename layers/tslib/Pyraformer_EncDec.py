@@ -114,7 +114,12 @@ class Encoder(nn.Module):
         ])  # naive pyramid attention
 
         self.enc_embedding = DataEmbedding(
-            configs.enc_in, configs.d_model, configs.dropout)
+            configs.enc_in,
+            configs.d_model,
+            embed_type=configs.embed,
+            freq=configs.freq,
+            dropout=configs.dropout,
+        )
         self.conv_layers = Bottleneck_Construct(
             configs.d_model, window_size, d_bottleneck)
 

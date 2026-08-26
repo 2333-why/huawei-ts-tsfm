@@ -144,4 +144,3 @@ Implementation follows test-first changes. Acceptance requires:
 9. The real dual-GPU smoke matrix completes using GPUs 0 and 1, with every phase
    limited to one batch. No full epoch or formal training is run during
    verification.
-

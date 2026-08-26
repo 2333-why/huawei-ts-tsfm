@@ -6,6 +6,8 @@ import torch
 from models.tslib_adapter import forward_power_model
 from models.tslib_factory import build_power_model
 from models.tslib_registry import SELECTED_MODEL_NAMES
+from layers.tslib.Embed import TimeFeatureEmbedding
+from layers.tslib.Pyraformer_EncDec import Encoder
 from run_time_series import parse_args
 
 
@@ -67,3 +69,23 @@ def test_retained_model_forecasts_supported_shapes(name, seq_len, pred_len):
 def test_removed_model_is_rejected_by_cli():
     with pytest.raises(SystemExit):
         parse_args(["--dataset", "skippd_luoyang", "--model", "DLinear"])
+
+
+def test_pyraformer_forwards_embedding_configuration_by_name():
+    configs = SimpleNamespace(
+        seq_len=24,
+        d_model=8,
+        d_ff=16,
+        n_heads=2,
+        dropout=0.37,
+        e_layers=1,
+        enc_in=1,
+        embed="timeF",
+        freq="t",
+    )
+
+    encoder = Encoder(configs, window_size=[4, 4], inner_size=5)
+
+    assert isinstance(encoder.enc_embedding.temporal_embedding, TimeFeatureEmbedding)
+    assert encoder.enc_embedding.temporal_embedding.embed.in_features == 5
+    assert encoder.enc_embedding.dropout.p == 0.37

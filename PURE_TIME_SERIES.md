@@ -80,4 +80,16 @@ GPUS="0 1" \
 <OUTPUT_ROOT>/<setting>/<dataset>/<model>/metrics.json
 <OUTPUT_ROOT>/<setting>/<dataset>/<model>/predictions.csv
 <OUTPUT_ROOT>/<setting>/<dataset>/<model>/run.log
+<OUTPUT_ROOT>/<setting>/<dataset>/<model>/completion.tsv
 ```
+
+`metrics.json` 的 `metrics_original_power_units` 在恢复原功率单位后计算：
+`nmae = mae / rated_power`、`nrmse = rmse / rated_power`，同时提供
+`nmae_percent` 和 `nrmse_percent`。所有误差都只统计有效目标点；若一个阶段或
+评估结果没有有效目标点则直接失败，指标误差字段写为 `null`。
+
+`completion.tsv` 是成功产物的原子完成清单，记录任务身份、运行模式、epoch、
+各阶段步数和三个产物的 SHA-256。`RESUME=1` 只有在 summary 行身份、规范输出
+目录、运行限制、完成清单和三个哈希全部匹配时才复用；损坏、截断、篡改、重复、
+失败或旧模式产物都会重跑。预测 CSV 的时间戳保持数据源的无时区 clock time，
+不附加虚假的时区偏移。

@@ -19,6 +19,7 @@ fi
 OUTPUT_ROOT="${OUTPUT_ROOT:-$DEFAULT_OUTPUT_ROOT}"
 SUMMARY_PATH="${SUMMARY_PATH:-$OUTPUT_ROOT/$DEFAULT_SUMMARY_NAME}"
 SUMMARY_HEADER=$'seq_len\tpred_len\tdataset\tmodel\tstatus\toutput_dir\texit_code\tlaunch_gpu'
+COMPLETION_HEADER=$'schema_version\tdataset\tmodel\tseq_len\tpred_len\toutput_dir\trun_mode\tepochs\tmax_train_steps\tmax_eval_steps\tmax_test_steps\ttrain_steps\tval_steps\ttest_steps\tbest_sha256\tpredictions_sha256\tmetrics_sha256'
 
 DATASETS=("skippd_luoyang" "pvod_station00_ylj")
 EXPECTED_MODELS=(
@@ -60,6 +61,7 @@ if [[ -z "${GPU_0:-}" || -z "${GPU_1:-}" || -n "${EXTRA_GPU:-}" || "$GPU_0" == "
 fi
 
 mkdir -p "$OUTPUT_ROOT" "$(dirname "$SUMMARY_PATH")"
+OUTPUT_ROOT_CANONICAL="$(realpath -m "$OUTPUT_ROOT")"
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
@@ -71,6 +73,28 @@ SETTING_ROWS=(
     "seq48_h4 48 4"
     "seq96_h4 96 4"
 )
+
+setting_label_for_task() {
+    local seq_len="$1"
+    local pred_len="$2"
+    local dataset="$3"
+    case "$seq_len:$pred_len:$dataset" in
+        24:1:skippd_luoyang|24:1:pvod_station00_ylj) printf 'seq24_pred1\n' ;;
+        48:1:skippd_luoyang|48:1:pvod_station00_ylj) printf 'seq48_pred1\n' ;;
+        48:48:skippd_luoyang|48:16:pvod_station00_ylj) printf 'seq48_h4\n' ;;
+        96:48:skippd_luoyang|96:16:pvod_station00_ylj) printf 'seq96_h4\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+model_is_expected() {
+    local candidate="$1"
+    local model
+    for model in "${EXPECTED_MODELS[@]}"; do
+        [[ "$candidate" == "$model" ]] && return 0
+    done
+    return 1
+}
 
 MODEL_FILE="$TEMP_DIR/models.txt"
 if ! CUDA_VISIBLE_DEVICES="$GPU_0" \
@@ -120,10 +144,12 @@ done
 EXPECTED_TASKS=$task_index
 
 # Load reusable rows before writing the new summary. A task is resumable only
-# when its previous row was PASS for the same setting/dataset/model and all
-# three expected artifacts are non-empty.
+# when its previous row and completion manifest describe the exact current
+# task and all three artifact hashes still match.
 declare -A RESUME_PASS_DIRS=()
 declare -A RESUME_PASS_LAUNCH_GPUS=()
+declare -A RESUME_SEEN_KEYS=()
+declare -A RESUME_INVALID_KEYS=()
 resume_key() {
     local setting_label="$1"
     local dataset="$2"
@@ -131,13 +157,76 @@ resume_key() {
     printf '%s|%s|%s' "$setting_label" "$dataset" "$model"
 }
 
-resume_key_from_output_dir() {
+sha256_file() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+completion_is_valid() {
     local output_dir="$1"
-    local model dataset setting_label
-    model="$(basename "$output_dir")"
-    dataset="$(basename "$(dirname "$output_dir")")"
-    setting_label="$(basename "$(dirname "$(dirname "$output_dir")")")"
-    resume_key "$setting_label" "$dataset" "$model"
+    local expected_seq_len="$2"
+    local expected_pred_len="$3"
+    local expected_dataset="$4"
+    local expected_model="$5"
+    local manifest="$output_dir/completion.tsv"
+    local actual_header manifest_line
+    local schema dataset model seq_len pred_len manifest_output_dir run_mode epochs
+    local max_train_steps max_eval_steps max_test_steps train_steps val_steps test_steps
+    local best_sha256 predictions_sha256 metrics_sha256 extra
+    local expected_mode expected_epochs expected_train_limit expected_eval_limit expected_test_limit
+
+    [[ -s "$manifest" ]] || return 1
+    IFS= read -r actual_header <"$manifest" || return 1
+    [[ "$actual_header" == "$COMPLETION_HEADER" ]] || return 1
+    mapfile -t manifest_rows < <(tail -n +2 "$manifest")
+    (( ${#manifest_rows[@]} == 1 )) || return 1
+    manifest_line="${manifest_rows[0]}"
+    IFS=$'\t' read -r schema dataset model seq_len pred_len manifest_output_dir \
+        run_mode epochs max_train_steps max_eval_steps max_test_steps \
+        train_steps val_steps test_steps best_sha256 predictions_sha256 metrics_sha256 extra \
+        <<<"$manifest_line"
+    [[ -z "$extra" ]] || return 1
+    [[ "$schema" == "1" \
+        && "$dataset" == "$expected_dataset" \
+        && "$model" == "$expected_model" \
+        && "$seq_len" == "$expected_seq_len" \
+        && "$pred_len" == "$expected_pred_len" \
+        && "$manifest_output_dir" == "$output_dir" ]] || return 1
+
+    if [[ "$SMOKE" == "1" ]]; then
+        expected_mode="smoke"
+        expected_epochs="1"
+        expected_train_limit="1"
+        expected_eval_limit="1"
+        expected_test_limit="1"
+    else
+        expected_mode="full"
+        expected_epochs="$EPOCHS"
+        expected_train_limit="0"
+        expected_eval_limit="0"
+        expected_test_limit="0"
+    fi
+    [[ "$run_mode" == "$expected_mode" \
+        && "$epochs" == "$expected_epochs" \
+        && "$max_train_steps" == "$expected_train_limit" \
+        && "$max_eval_steps" == "$expected_eval_limit" \
+        && "$max_test_steps" == "$expected_test_limit" ]] || return 1
+
+    if [[ "$SMOKE" == "1" ]]; then
+        [[ "$train_steps" == "1" && "$val_steps" == "1" && "$test_steps" == "1" ]] || return 1
+    else
+        [[ "$train_steps" =~ ^[1-9][0-9]*$ \
+            && "$val_steps" =~ ^[1-9][0-9]*$ \
+            && "$test_steps" =~ ^[1-9][0-9]*$ ]] || return 1
+    fi
+    [[ "$best_sha256" =~ ^[0-9a-fA-F]{64}$ \
+        && "$predictions_sha256" =~ ^[0-9a-fA-F]{64}$ \
+        && "$metrics_sha256" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+    [[ -s "$output_dir/best.pt" \
+        && -s "$output_dir/predictions.csv" \
+        && -s "$output_dir/metrics.json" ]] || return 1
+    [[ "$(sha256_file "$output_dir/best.pt")" == "$best_sha256" \
+        && "$(sha256_file "$output_dir/predictions.csv")" == "$predictions_sha256" \
+        && "$(sha256_file "$output_dir/metrics.json")" == "$metrics_sha256" ]]
 }
 
 load_resume_summary() {
@@ -148,11 +237,38 @@ load_resume_summary() {
     [[ "$actual_header" == "$SUMMARY_HEADER" ]] || return 0
 
     local seq_len pred_len dataset model status output_dir exit_code launch_gpu key
+    local setting_label expected_output_dir
     while IFS=$'\t' read -r seq_len pred_len dataset model status output_dir exit_code launch_gpu; do
         # The exact header gate above rejects legacy schemas before any row is
-        # considered; malformed current-schema rows are skipped as well.
-        [[ "$status" == "PASS" && -n "$output_dir" && -n "$launch_gpu" ]] || continue
-        key="$(resume_key_from_output_dir "$output_dir")"
+        # considered. Task identity comes from the row itself, never from the
+        # output path.
+        [[ "$seq_len" =~ ^[1-9][0-9]*$ \
+            && "$pred_len" =~ ^[1-9][0-9]*$ \
+            && -n "$dataset" && -n "$model" ]] || continue
+        setting_label="$(setting_label_for_task "$seq_len" "$pred_len" "$dataset")" || continue
+        key="$(resume_key "$setting_label" "$dataset" "$model")"
+        if [[ -n "${RESUME_SEEN_KEYS[$key]:-}" ]]; then
+            RESUME_INVALID_KEYS["$key"]=1
+            unset 'RESUME_PASS_DIRS[$key]'
+            unset 'RESUME_PASS_LAUNCH_GPUS[$key]'
+            continue
+        fi
+        RESUME_SEEN_KEYS["$key"]=1
+        [[ -z "${RESUME_INVALID_KEYS[$key]:-}" ]] || continue
+        [[ "$status" == "PASS" \
+            && -n "$output_dir" \
+            && "$exit_code" == "0" \
+            && "$launch_gpu" =~ ^[^[:space:]]+$ ]] || {
+            RESUME_INVALID_KEYS["$key"]=1
+            continue
+        }
+        expected_output_dir="$OUTPUT_ROOT_CANONICAL/$setting_label/$dataset/$model"
+        if ! model_is_expected "$model" || [[ "$output_dir" != "$expected_output_dir" ]]; then
+            RESUME_INVALID_KEYS["$key"]=1
+            continue
+        fi
+        completion_is_valid "$output_dir" "$seq_len" "$pred_len" "$dataset" "$model" || continue
+        [[ -z "${RESUME_INVALID_KEYS[$key]:-}" ]] || continue
         RESUME_PASS_DIRS["$key"]="$output_dir"
         RESUME_PASS_LAUNCH_GPUS["$key"]="$launch_gpu"
     done < <(tail -n +2 "$SUMMARY_PATH")
@@ -165,23 +281,17 @@ if [[ "$SMOKE" == "1" ]]; then
     RUN_MODE_ARGS=(--smoke)
 fi
 
-# RESUME=1 时，只复用前次 summary 中 PASS 且三个结果文件非空的任务。
-results_exist() {
-    local output_dir="$1"
-    [[ -s "$output_dir/best.pt" \
-        && -s "$output_dir/metrics.json" \
-        && -s "$output_dir/predictions.csv" ]]
-}
-
 can_resume() {
     local setting_label="$1"
-    local dataset="$2"
-    local model="$3"
-    local output_dir="$4"
+    local seq_len="$2"
+    local pred_len="$3"
+    local dataset="$4"
+    local model="$5"
+    local output_dir="$6"
     local key
     key="$(resume_key "$setting_label" "$dataset" "$model")"
     [[ "${RESUME_PASS_DIRS[$key]:-}" == "$output_dir" ]] \
-        && results_exist "$output_dir"
+        && completion_is_valid "$output_dir" "$seq_len" "$pred_len" "$dataset" "$model"
 }
 
 # 一张卡一次只训练一个模型；两张卡的队列会同时运行。
@@ -194,13 +304,13 @@ run_gpu_queue() {
 
     : >"$result_file"
     while IFS=$'\t' read -r setting_label seq_len pred_len dataset model; do
-        output_dir="$OUTPUT_ROOT/$setting_label/$dataset/$model"
+        output_dir="$OUTPUT_ROOT_CANONICAL/$setting_label/$dataset/$model"
         log_file="$output_dir/run.log"
         mkdir -p "$output_dir"
         launch_gpu="$gpu"
 
         if [[ "$RESUME" == "1" ]] \
-            && can_resume "$setting_label" "$dataset" "$model" "$output_dir"; then
+            && can_resume "$setting_label" "$seq_len" "$pred_len" "$dataset" "$model" "$output_dir"; then
             key="$(resume_key "$setting_label" "$dataset" "$model")"
             launch_gpu="${RESUME_PASS_LAUNCH_GPUS[$key]}"
             echo "[跳过 GPU $gpu] $setting_label / $dataset / $model"

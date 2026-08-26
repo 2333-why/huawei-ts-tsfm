@@ -49,4 +49,10 @@ GPUS="0 1" \
   bash scripts/smoke_all_pure_time_series.sh
 ```
 
+评估指标在恢复原功率单位后计算，`nmae`/`nrmse` 分别为 MAE/RMSE 除以数据集
+额定功率，并同时输出百分比字段；只统计有效目标点。每个成功任务还写入
+`completion.tsv`，包含任务身份、运行限制、阶段步数及 `best.pt`、
+`predictions.csv`、`metrics.json` 的 SHA-256。`RESUME=1` 仅复用身份、规范路径、
+运行模式和哈希均完全匹配的成功产物。
+
 详细说明、输出目录和恢复规则见 [PURE_TIME_SERIES.md](PURE_TIME_SERIES.md)。

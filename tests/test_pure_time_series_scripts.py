@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from collections import Counter
 from pathlib import Path
@@ -46,6 +47,7 @@ def _fake_python(tmp_path: Path) -> Path:
     fake.write_text(
         """#!/usr/bin/env python3
 import json
+import hashlib
 import os
 from pathlib import Path
 import signal
@@ -110,8 +112,65 @@ try:
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "best.pt").write_bytes(b"checkpoint")
-        (output_dir / "metrics.json").write_text("{}", encoding="utf-8")
-        (output_dir / "predictions.csv").write_text("prediction\\n", encoding="utf-8")
+        (output_dir / "predictions.csv").write_text(
+            "issue_time\\ttarget_time\\thorizon_minutes\\ty_true\\ty_pred\\n"
+            "2025-01-01T00:00:00\\t2025-01-01T00:05:00\\t5\\t1.0\\t1.0\\n",
+            encoding="utf-8",
+        )
+        smoke = "--smoke" in args
+        epochs = 1 if smoke else (
+            int(args[args.index("--epochs") + 1]) if "--epochs" in args else 1
+        )
+        phase_steps = {"train": 1, "val": 1, "test": 1}
+        metrics = {
+            "dataset": dataset,
+            "model": model,
+            "seq_len": seq_len,
+            "pred_len": pred_len,
+            "best_epoch": 0,
+            "best_val_loss": 0.0,
+            "test_loss_normalized": 0.0,
+            "phase_steps": phase_steps,
+            "metrics_original_power_units": {
+                "count": 1,
+                "mae": 0.0,
+                "rmse": 0.0,
+                "nmae": 0.0,
+                "nrmse": 0.0,
+                "mape_percent": 0.0,
+                "nmae_percent": 0.0,
+                "nrmse_percent": 0.0,
+            },
+            "run_mode": "smoke" if smoke else "full",
+            "epochs": epochs,
+            "limits": {"train": 1 if smoke else 0, "val": 1 if smoke else 0, "test": 1 if smoke else 0},
+            "history": [],
+        }
+        (output_dir / "metrics.json").write_text(
+            json.dumps(metrics, sort_keys=True, indent=2), encoding="utf-8"
+        )
+        def sha256(path):
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        manifest_header = [
+            "schema_version", "dataset", "model", "seq_len", "pred_len",
+            "output_dir", "run_mode", "epochs", "max_train_steps",
+            "max_eval_steps", "max_test_steps", "train_steps", "val_steps",
+            "test_steps", "best_sha256", "predictions_sha256", "metrics_sha256",
+        ]
+        manifest_values = [
+            "1", dataset, model, str(seq_len), str(pred_len), str(output_dir.resolve()),
+            "smoke" if smoke else "full", str(epochs),
+            "1" if smoke else "0", "1" if smoke else "0", "1" if smoke else "0",
+            "1", "1", "1", sha256(output_dir / "best.pt"),
+            sha256(output_dir / "predictions.csv"), sha256(output_dir / "metrics.json"),
+        ]
+        manifest = output_dir / "completion.tsv"
+        temp_manifest = output_dir / ".completion.tsv.tmp.fake"
+        temp_manifest.write_text(
+            "\\t".join(manifest_header) + "\\n" + "\\t".join(manifest_values) + "\\n",
+            encoding="utf-8",
+        )
+        temp_manifest.replace(manifest)
         event["exit_code"] = 0
 finally:
     event["finished_at"] = time.monotonic_ns()
@@ -172,6 +231,12 @@ def _events(record_path: Path):
     ]
 
 
+def _task_output_dir(output_root: Path, task=(24, 1, "skippd_luoyang", "TSMixer")) -> Path:
+    seq_len, pred_len, dataset, model = task
+    setting = EXPECTED_LABEL_BY_TASK[(seq_len, pred_len, dataset)]
+    return output_root / setting / dataset / model
+
+
 def test_smoke_expands_exactly_64_power_runs_with_required_arguments(tmp_path):
     result, record_path, output_root = _run_smoke(tmp_path)
 
@@ -221,6 +286,18 @@ def test_smoke_expands_exactly_64_power_runs_with_required_arguments(tmp_path):
             Path(path).resolve().relative_to(output_root.resolve())
         except ValueError:
             pytest.fail("run output escaped the configured output root")
+
+    for path in output_dirs:
+        task_dir = Path(path)
+        metrics = json.loads((task_dir / "metrics.json").read_text(encoding="utf-8"))
+        assert metrics["metrics_original_power_units"]["nmae"] is not None
+        assert metrics["metrics_original_power_units"]["nrmse"] is not None
+        assert metrics["phase_steps"] == {"train": 1, "val": 1, "test": 1}
+        manifest_rows = (task_dir / "completion.tsv").read_text(encoding="utf-8").splitlines()
+        assert len(manifest_rows) == 2
+        assert manifest_rows[0].split("\t")[0:5] == [
+            "schema_version", "dataset", "model", "seq_len", "pred_len",
+        ]
 
     summary = output_root / "smoke_summary.tsv"
     rows = summary.read_text(encoding="utf-8").splitlines()
@@ -312,6 +389,103 @@ def test_resume_preserves_prior_launch_gpu_when_assignment_changes(tmp_path):
 
     rows = (output_root / "smoke_summary.tsv").read_text().splitlines()[1:]
     assert Counter(row.split("\t")[7] for row in rows) == Counter({"0": 32, "1": 32})
+
+
+@pytest.mark.parametrize("mutation", [
+    "metrics",
+    "predictions",
+    "checkpoint",
+    "identity",
+    "summary_identity",
+    "manifest_output_dir",
+    "truncated_manifest",
+])
+def test_resume_rejects_incomplete_or_mismatched_completion_artifacts(tmp_path, mutation):
+    first, record_path, output_root = _run_smoke(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+    task_dir = _task_output_dir(output_root)
+
+    if mutation == "metrics":
+        (task_dir / "metrics.json").write_text("not json", encoding="utf-8")
+    elif mutation == "predictions":
+        with (task_dir / "predictions.csv").open("ab") as handle:
+            handle.write(b"tampered\\n")
+    elif mutation == "checkpoint":
+        (task_dir / "best.pt").write_bytes(b"tampered checkpoint")
+    elif mutation == "summary_identity":
+        summary = output_root / "smoke_summary.tsv"
+        rows = [line.split("\t") for line in summary.read_text(encoding="utf-8").splitlines()]
+        for row in rows[1:]:
+            if tuple(row[:4]) == ("24", "1", "skippd_luoyang", "TSMixer"):
+                row[2] = "pvod_station00_ylj"
+                break
+        summary.write_text(
+            "\n".join("\t".join(row) for row in rows) + "\n", encoding="utf-8"
+        )
+    elif mutation in {"identity", "manifest_output_dir"}:
+        manifest = task_dir / "completion.tsv"
+        rows = [line.split("\t") for line in manifest.read_text(encoding="utf-8").splitlines()]
+        if mutation == "identity":
+            rows[1][1] = "pvod_station00_ylj"
+        else:
+            rows[1][5] = str(task_dir) + "-wrong"
+        manifest.write_text(
+            "\n".join("\t".join(row) for row in rows) + "\n", encoding="utf-8"
+        )
+    else:
+        manifest = task_dir / "completion.tsv"
+        rows = manifest.read_text(encoding="utf-8").splitlines()
+        manifest.write_text(rows[0] + "\n", encoding="utf-8")
+
+    second, record_path, _ = _run_smoke(
+        tmp_path,
+        resume=True,
+        extra_environment={"GPUS": "2 3"},
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    expected_retries = 2 if mutation == "summary_identity" else 1
+    assert len(runs) == 64 + expected_retries
+    retried_tasks = {
+        (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
+        for event in runs[64:]
+    }
+    assert (24, 1, "skippd_luoyang", "TSMixer") in retried_tasks
+    if mutation == "summary_identity":
+        assert (24, 1, "pvod_station00_ylj", "TSMixer") in retried_tasks
+
+
+def test_resume_rejects_duplicate_summary_identity(tmp_path):
+    first, record_path, output_root = _run_smoke(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+    summary = output_root / "smoke_summary.tsv"
+    rows = summary.read_text(encoding="utf-8").splitlines()
+    rows.append(rows[1])
+    summary.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    second, record_path, _ = _run_smoke(tmp_path, resume=True)
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 65
+
+
+def test_resume_rejects_completion_from_different_full_epoch_setting(tmp_path):
+    first, record_path, output_root = _run_smoke(
+        tmp_path,
+        script_name="scripts/run_all_pure_time_series.sh",
+        extra_environment={"EPOCHS": "40"},
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    second, record_path, _ = _run_smoke(
+        tmp_path,
+        resume=True,
+        script_name="scripts/run_all_pure_time_series.sh",
+        extra_environment={"EPOCHS": "41"},
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 128
 
 
 def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_path):

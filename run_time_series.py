@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
+import os
 import random
 from itertools import islice
 from pathlib import Path
@@ -28,6 +30,25 @@ from models.tslib_registry import SELECTED_MODEL_NAMES
 
 
 REPO_ROOT = Path(__file__).resolve().parent
+COMPLETION_HEADER = (
+    "schema_version",
+    "dataset",
+    "model",
+    "seq_len",
+    "pred_len",
+    "output_dir",
+    "run_mode",
+    "epochs",
+    "max_train_steps",
+    "max_eval_steps",
+    "max_test_steps",
+    "train_steps",
+    "val_steps",
+    "test_steps",
+    "best_sha256",
+    "predictions_sha256",
+    "metrics_sha256",
+)
 DEFAULT_CONFIGS = {
     "skippd_luoyang": REPO_ROOT / "configs/datasets/skippd_luoyang.json",
     "pvod_station00_ylj": REPO_ROOT / "configs/datasets/pvod_station00_ylj.yaml",
@@ -155,7 +176,8 @@ def _run_epoch(
 ) -> Tuple[float, int]:
     training = optimizer is not None
     model.train(training)
-    total_loss = 0.0
+    total_sse = 0.0
+    total_valid = 0
     steps = 0
     limit = _step_limit(max_steps)
     batches = loader if limit is None else islice(loader, limit)
@@ -174,14 +196,18 @@ def _run_epoch(
         if training:
             loss.backward()
             optimizer.step()
-        total_loss += float(loss.detach().cpu())
+        batch_mask = target_mask.unsqueeze(-1).to(dtype=prediction.dtype)
+        total_sse += float(((prediction.detach() - batch_y).square() * batch_mask).sum().cpu())
+        total_valid += int(target_mask.sum().item())
         steps += 1
     if steps == 0:
         limit_label = "unlimited" if limit is None else str(limit)
         raise RuntimeError(
             f"{phase} loader is empty; max_steps={limit_label} requires at least one batch"
         )
-    return (total_loss / steps if steps else float("nan")), steps
+    if total_valid == 0:
+        raise RuntimeError(f"{phase} phase has zero valid targets")
+    return total_sse / total_valid, steps
 
 
 @torch.no_grad()
@@ -196,7 +222,8 @@ def _collect_predictions(
     phase: str = "eval",
 ):
     model.eval()
-    losses: List[float] = []
+    total_sse = 0.0
+    total_valid = 0
     predictions: List[np.ndarray] = []
     targets: List[np.ndarray] = []
     masks: List[np.ndarray] = []
@@ -211,7 +238,9 @@ def _collect_predictions(
         prediction = forward_power_model(
             model_name, model, batch_x, effective_label_len, effective_pred_len
         )
-        losses.append(float(_masked_mse(prediction, batch_y, target_mask).cpu()))
+        batch_mask = target_mask.unsqueeze(-1).to(dtype=prediction.dtype)
+        total_sse += float(((prediction - batch_y).square() * batch_mask).sum().cpu())
+        total_valid += int(target_mask.sum().item())
         predictions.append(prediction.detach().cpu().numpy())
         targets.append(batch_y.detach().cpu().numpy())
         masks.append(target_mask.detach().cpu().numpy())
@@ -224,8 +253,10 @@ def _collect_predictions(
         raise RuntimeError(
             f"{phase} loader is empty; max_steps={limit_label} requires at least one batch"
         )
+    if total_valid == 0:
+        raise RuntimeError(f"{phase} phase has zero valid targets")
     return {
-        "loss": float(np.mean(losses)), "steps": len(predictions),
+        "loss": total_sse / total_valid, "steps": len(predictions),
         "prediction": np.concatenate(predictions),
         "target": np.concatenate(targets), "mask": np.concatenate(masks),
         "issue_time_ns": np.concatenate(issue_times),
@@ -236,20 +267,41 @@ def _safe_metric(value: float):
     return None if not math.isfinite(float(value)) else float(value)
 
 
-def _metrics(prediction, target, mask) -> dict:
+def _metrics(prediction, target, mask, rated_power: float) -> dict:
+    try:
+        rated_power = float(rated_power)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("rated_power must be finite and positive") from exc
+    if not math.isfinite(rated_power) or rated_power <= 0:
+        raise ValueError("rated_power must be finite and positive")
     valid = np.asarray(mask, dtype=bool)
     pred = np.asarray(prediction)[..., 0][valid]
     truth = np.asarray(target)[..., 0][valid]
     if truth.size == 0:
-        return {"count": 0, "mae": None, "rmse": None, "mape_percent": None}
+        return {
+            "count": 0,
+            "mae": None,
+            "rmse": None,
+            "nmae": None,
+            "nrmse": None,
+            "mape_percent": None,
+            "nmae_percent": None,
+            "nrmse_percent": None,
+        }
     error = pred - truth
+    mae = np.mean(np.abs(error))
+    rmse = np.sqrt(np.mean(error ** 2))
     nonzero = np.abs(truth) > 1e-8
     return {
         "count": int(truth.size),
-        "mae": _safe_metric(np.mean(np.abs(error))),
-        "rmse": _safe_metric(np.sqrt(np.mean(error ** 2))),
+        "mae": _safe_metric(mae),
+        "rmse": _safe_metric(rmse),
+        "nmae": _safe_metric(mae / rated_power),
+        "nrmse": _safe_metric(rmse / rated_power),
         "mape_percent": _safe_metric(np.mean(np.abs(error[nonzero] / truth[nonzero])) * 100)
         if nonzero.any() else None,
+        "nmae_percent": _safe_metric(mae / rated_power * 100),
+        "nrmse_percent": _safe_metric(rmse / rated_power * 100),
     }
 
 
@@ -259,7 +311,7 @@ def _write_predictions(path: Path, result, dataset, step_minutes: int) -> dict:
     prediction = result["prediction"] * scale
     target = result["target"] * scale
     mask = result["mask"]
-    aggregate = _metrics(prediction, target, mask)
+    aggregate = _metrics(prediction, target, mask, dataset.rated_power)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=[
             "issue_time", "target_time", "horizon_minutes", "y_true", "y_pred",
@@ -272,9 +324,9 @@ def _write_predictions(path: Path, result, dataset, step_minutes: int) -> dict:
             for horizon_index in range(prediction.shape[1]):
                 if not mask[row_index, horizon_index]:
                     continue
-                from datetime import datetime, timedelta, timezone
+                from datetime import datetime, timedelta
 
-                issue = datetime.fromtimestamp(issue_seconds, tz=timezone.utc)
+                issue = datetime.utcfromtimestamp(issue_seconds)
                 target_time = issue + timedelta(minutes=step_minutes * (horizon_index + 1))
                 writer.writerow({
                     "issue_time": issue.isoformat(),
@@ -298,6 +350,57 @@ def _json_safe(value):
     return value
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_completion_manifest(
+    output_dir: Path,
+    args,
+    dataset,
+    metrics_payload: dict,
+    checkpoint_path: Path,
+    prediction_path: Path,
+    metrics_path: Path,
+) -> Path:
+    """Atomically record the successful run identity, limits, steps, and hashes."""
+
+    phase_steps = metrics_payload["phase_steps"]
+    values = (
+        "1",
+        str(args.dataset),
+        str(args.model),
+        str(int(dataset.seq_len)),
+        str(int(dataset.pred_len)),
+        str(output_dir.resolve()),
+        "smoke" if args.smoke else "full",
+        str(int(args.epochs)),
+        str(int(args.max_train_steps)),
+        str(int(args.max_eval_steps)),
+        str(int(args.max_test_steps)),
+        str(int(phase_steps["train"])),
+        str(int(phase_steps["val"])),
+        str(int(phase_steps["test"])),
+        _sha256(checkpoint_path),
+        _sha256(prediction_path),
+        _sha256(metrics_path),
+    )
+    manifest_path = output_dir / "completion.tsv"
+    temp_path = output_dir / f".completion.tsv.tmp.{os.getpid()}"
+    with temp_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(COMPLETION_HEADER)
+        writer.writerow(values)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_path, manifest_path)
+    return manifest_path
+
+
 def run(args) -> dict:
     _validate_runtime_args(args)
     _seed_everything(args.seed)
@@ -316,6 +419,9 @@ def run(args) -> dict:
     else:
         output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    completion_path = output_dir / "completion.tsv"
+    if completion_path.exists():
+        completion_path.unlink()
     checkpoint_path = output_dir / "best.pt"
 
     best_val = float("inf")
@@ -406,15 +512,33 @@ def run(args) -> dict:
             "test": int(test_result["steps"]),
         },
         "metrics_original_power_units": metrics,
+        "rated_power": float(test_dataset.rated_power),
+        "run_mode": "smoke" if args.smoke else "full",
+        "epochs": int(args.epochs),
+        "limits": {
+            "train": int(args.max_train_steps),
+            "val": int(args.max_eval_steps),
+            "test": int(args.max_test_steps),
+        },
         "history": history,
     })
     metrics_path = output_dir / "metrics.json"
     with metrics_path.open("w", encoding="utf-8") as handle:
         json.dump(metrics_payload, handle, indent=2, ensure_ascii=True)
+    completion_path = _write_completion_manifest(
+        output_dir,
+        args,
+        test_dataset,
+        metrics_payload,
+        checkpoint_path,
+        prediction_path,
+        metrics_path,
+    )
     return {
         "checkpoint": checkpoint_path,
         "predictions": prediction_path,
         "metrics": metrics_path,
+        "completion": completion_path,
         "payload": metrics_payload,
     }
 
