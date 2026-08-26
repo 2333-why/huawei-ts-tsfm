@@ -5,10 +5,23 @@ from einops import rearrange, repeat
 from layers.tslib.Crossformer_EncDec import scale_block, Encoder, Decoder, DecoderLayer
 from layers.tslib.Embed import PatchEmbedding
 from layers.tslib.SelfAttention_Family import AttentionLayer, FullAttention, TwoStageAttentionLayer
-from models.PatchTST import FlattenHead
 
 
 from math import ceil
+
+
+class FlattenHead(nn.Module):
+    def __init__(self, n_vars, nf, target_window, head_dropout=0):
+        super().__init__()
+        self.n_vars = n_vars
+        self.flatten = nn.Flatten(start_dim=-2)
+        self.linear = nn.Linear(nf, target_window)
+        self.dropout = nn.Dropout(head_dropout)
+
+    def forward(self, x):
+        x = self.flatten(x)
+        x = self.linear(x)
+        return self.dropout(x)
 
 
 class Model(nn.Module):

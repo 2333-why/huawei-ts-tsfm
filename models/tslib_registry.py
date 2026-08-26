@@ -1,9 +1,4 @@
-"""Lazy catalog of forecasting models from Time-Series-Library.
-
-The catalog is intentionally independent from the model implementations.  A
-caller can enumerate every supported model without importing optional model
-dependencies (notably ``mamba_ssm``).
-"""
+"""Lazy catalog of the eight retained forecasting models."""
 
 from __future__ import annotations
 
@@ -22,53 +17,16 @@ class ModelSpec:
     constructor: str = "Model"
 
 
-SELECTED_MODEL_NAMES: tuple[str, ...] = tuple(sorted(
-    (
-        "Autoformer",
-        "Crossformer",
-        "DLinear",
-        "ETSformer",
-        "FEDformer",
-        "FiLM",
-        "FreTS",
-        "Informer",
-        "Koopa",
-        "LightTS",
-        "MICN",
-        "MSGNet",
-        "Mamba",
-        "MambaSimple",
-        "MultiPatchFormer",
-        "Nonstationary_Transformer",
-        "PAttn",
-        "PatchTST",
-        "Pyraformer",
-        "Reformer",
-        "SCINet",
-        "SegRNN",
-        "TSMixer",
-        "TemporalFusionTransformer",
-        "TiDE",
-        "TimeFilter",
-        "TimeMixer",
-        "TimeXer",
-        "TimesNet",
-        "Transformer",
-        "WPMixer",
-        "iTransformer",
-    )
-))
-
-
-EXCLUDED_MODELS: dict[str, str] = {
-    "Chronos": "Excluded foundation time-series model.",
-    "Chronos2": "Excluded foundation time-series model.",
-    "KANAD": "Excluded because the source implements anomaly detection, not forecasting.",
-    "Sundial": "Excluded foundation time-series model.",
-    "TimeMoE": "Excluded foundation time-series model.",
-    "TiRex": "Excluded foundation time-series model.",
-    "TimesFM": "Excluded foundation time-series model.",
-}
+SELECTED_MODEL_NAMES: tuple[str, ...] = (
+    "TSMixer",
+    "Pyraformer",
+    "SegRNN",
+    "Transformer",
+    "LightTS",
+    "Crossformer",
+    "FreTS",
+    "MICN",
+)
 
 
 MODEL_SPECS: dict[str, ModelSpec] = {
@@ -138,7 +96,6 @@ PURE_TIME_SERIES_MODELS: Mapping[str, type[torch.nn.Module]] = _LazyModelMapping
 
 
 __all__ = [
-    "EXCLUDED_MODELS",
     "MODEL_SPECS",
     "ModelSpec",
     "PURE_TIME_SERIES_MODELS",
