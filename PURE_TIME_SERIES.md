@@ -1,147 +1,77 @@
-# Pure time-series forecasting
+# 纯时序光伏功率预测
 
-This entry point trains forecasting-capable, non-foundation
-Time-Series-Library models using historical power only.  The runner supports
-these dataset identifiers and physical source columns:
+本分支只使用历史 `power` 数值，输入不包含图像、天气、未来信息或其他
+模态。数据集配置和目标列如下：
 
-| Dataset identifier | Target/power column |
-| --- | --- |
-| `skippd_luoyang` | `final_power` |
-| `pvod_station00_ylj` | `observe_power` |
+| 数据集 | 配置 | 采样间隔 | 目标列 |
+| --- | --- | ---: | --- |
+| `skippd_luoyang` | `configs/datasets/skippd_luoyang.json` | 5 分钟 | `final_power` |
+| `pvod_station00_ylj` | `configs/datasets/pvod_station00_ylj.yaml` | 15 分钟 | `observe_power` |
 
-The data adapters normalize the target into channel zero.  The model boundary
-passes only `batch_x[..., :1]`; images, weather/NWP, ramp features, time marks,
-privileged Teacher data, and future targets are not model inputs.  Encoder-
-decoder models receive historical power followed by zero-valued forecast
-positions.
+## 模型
 
-## Model catalog
+`run_time_series.py --list-models` 按综合排名返回且只返回以下八个模型：
 
-The authoritative catalog is printed by `run_time_series.py --list-models`.
-It contains exactly these 32 models:
+`TSMixer`、`Pyraformer`、`SegRNN`、`Transformer`、`LightTS`、`Crossformer`、
+`FreTS`、`MICN`。
 
-`Autoformer`, `Crossformer`, `DLinear`, `ETSformer`, `FEDformer`, `FiLM`,
-`FreTS`, `Informer`, `Koopa`, `LightTS`, `MICN`, `MSGNet`, `Mamba`,
-`MambaSimple`, `MultiPatchFormer`, `Nonstationary_Transformer`, `PAttn`,
-`PatchTST`, `Pyraformer`, `Reformer`, `SCINet`, `SegRNN`, `TSMixer`,
-`TemporalFusionTransformer`, `TiDE`, `TimeFilter`, `TimeMixer`, `TimeXer`,
-`TimesNet`, `Transformer`, `WPMixer`, and `iTransformer`.
+## 四组设置
 
-The registry also records these seven explicit exclusions:
+| 输出标签 | 历史点数 | 预测目标 |
+| --- | ---: | --- |
+| `seq24_pred1` | 24 | 未来 1 点 |
+| `seq48_pred1` | 48 | 未来 1 点 |
+| `seq48_h4` | 48 | 未来 4 小时 |
+| `seq96_h4` | 96 | 未来 4 小时 |
 
-| Excluded model | Reason |
-| --- | --- |
-| `Chronos` | Foundation time-series model; zero-shot foundation path. |
-| `Chronos2` | Foundation time-series model; zero-shot foundation path. |
-| `Sundial` | Foundation time-series model; zero-shot foundation path. |
-| `TimeMoE` | Foundation time-series model; zero-shot foundation path. |
-| `TiRex` | Foundation time-series model; zero-shot foundation path. |
-| `TimesFM` | Foundation time-series model; zero-shot foundation path. |
-| `KANAD` | Source implements anomaly detection, not supervised forecasting. |
+四小时按物理时间换算：`skippd_luoyang` 为 48 点，
+`pvod_station00_ylj` 为 16 点。一点预测始终为 1 点，与采样间隔无关。
 
-## One model
+## 单模型运行
 
-Use the required environment and process-local CUDA device explicitly.  The
-following example writes artifacts to a model-specific directory:
+进程内统一使用 `cuda:0`；环境变量中的物理卡号决定实际使用 GPU：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 /opt/data/private/penv/time/bin/python run_time_series.py \
-  --dataset skippd_luoyang --model PatchTST --epochs 40 \
-  --device cuda:0 --output_dir results_pure_time_series/skippd_luoyang/PatchTST
+  --dataset skippd_luoyang --model TSMixer \
+  --seq_len 24 --pred_len 1 --epochs 40 \
+  --device cuda:0 \
+  --output_dir results_pure_time_series/seq24_pred1/skippd_luoyang/TSMixer
 ```
+## 完整 64 任务实验
 
-For a one-model run, `CUDA_VISIBLE_DEVICES` may be either physical GPU `0` or
-`1`; the process-local address remains `cuda:0`.
-
-The CLI also accepts `--config`, model tuning flags, and explicit phase limits
-(`--max_train_steps`, `--max_eval_steps`, `--max_test_steps`); zero means no
-limit.  `--list-models` prints the 32 names and exits without requiring a
-dataset or model:
+四组设置 × 两个数据集（四小时按数据集换算）× 八个模型，共 64 个任务。
+下面的脚本将任务平均分给 GPU 0 和 GPU 1；每张卡内部串行执行，卡间并行，
+并保留每任务日志和 `run_summary.tsv`：
 
 ```bash
-/opt/data/private/penv/time/bin/python run_time_series.py --list-models
-```
-
-## Full 64-run matrix
-
-The full batch script discovers the model list from that CLI and runs all
-32 models on both datasets.  It uses `EPOCHS` (default `40`) and does not add
-smoke flags or phase step limits:
-
-```bash
+cd /opt/data/private/code/pure-ts
 PYTHON=/opt/data/private/penv/time/bin/python \
-OUTPUT_ROOT="$PWD/results_pure_time_series" EPOCHS=40 GPUS="0 1" RESUME=0 \
-  scripts/run_all_pure_time_series.sh
+GPUS="0 1" EPOCHS=40 RESUME=0 \
+  bash scripts/run_all_pure_time_series.sh
 ```
 
-By default, both scripts use physical GPUs `0 1` (override with the
-space-separated `GPUS` environment variable).  They create one sequential
-worker queue per selected GPU and assign the deterministic 64-row matrix
-round-robin, so both cards are active concurrently while no card runs two
-model processes at once.  Each model subprocess receives
-`CUDA_VISIBLE_DEVICES=<physical-gpu>` and uses `--device cuda:0`.
+设置 `RESUME=1` 会跳过已有 `best.pt`、`metrics.json` 和
+`predictions.csv` 的任务，失败或不完整任务会重试。
 
-A failed subprocess is recorded and the remaining combinations continue; the
-script waits for both queues, aggregates their results, and exits non-zero
-after writing the summary if any combination failed.  To resume, use
-`RESUME=1`: completed rows are reused only when their summary status is `PASS`
-and all three expected artifacts exist, while failed or incomplete rows are
-retried.
+## 有界 Smoke Test
 
-The historical full-matrix path remains a compatibility alias and forwards
-all arguments and environment variables unchanged:
+Smoke 使用完全相同的 64 任务矩阵，并将每个任务的训练、验证、测试阶段限制
+为最多一个 batch，不运行完整 epoch：
 
 ```bash
-scripts/run_time_series_models.sh
-```
-
-## Bounded smoke matrix
-
-The smoke script expands exactly `32 x 2 = 64` dataset/model combinations and
-passes `--smoke --device cuda:0` to every model subprocess:
-
-```bash
+cd /opt/data/private/code/pure-ts
 PYTHON=/opt/data/private/penv/time/bin/python \
-OUTPUT_ROOT="$PWD/results_pure_time_series_smoke" GPUS="0 1" RESUME=0 \
-  scripts/smoke_all_pure_time_series.sh
+GPUS="0 1" \
+  bash scripts/smoke_all_pure_time_series.sh
 ```
 
-`--smoke` forces the runner to one epoch container, batch size 2, and exactly
-one training, validation, and test iteration.  It is intentionally bounded;
-the smoke command never runs a complete unrestricted dataset epoch.  The
-script uses the two GPU queues concurrently, continues after individual failures, writes
-`results_pure_time_series_smoke/smoke_summary.tsv`, and exits non-zero if any
-row is `FAIL`.  Use `RESUME=1` with the same `OUTPUT_ROOT` to retry only failed
-or incomplete rows.
-
-The historical smoke path is also a transparent compatibility alias:
-
-```bash
-scripts/smoke_time_series_models.sh
-```
-
-## Artifacts and optional dependency
-
-Each dataset/model combination has its own directory, so concurrent matrix
-rows cannot overwrite one another:
+结果写入 `results_pure_time_series_smoke/smoke_summary.tsv`；只有 64 行均为
+`PASS` 才表示 smoke 成功。每个任务的产物位于：
 
 ```text
-<OUTPUT_ROOT>/<dataset>/<model>/best.pt
-<OUTPUT_ROOT>/<dataset>/<model>/metrics.json
-<OUTPUT_ROOT>/<dataset>/<model>/predictions.csv
-<OUTPUT_ROOT>/<dataset>/<model>/run.log
-<OUTPUT_ROOT>/smoke_summary.tsv       # smoke matrix
-<OUTPUT_ROOT>/run_summary.tsv         # full matrix
+<OUTPUT_ROOT>/<setting>/<dataset>/<model>/best.pt
+<OUTPUT_ROOT>/<setting>/<dataset>/<model>/metrics.json
+<OUTPUT_ROOT>/<setting>/<dataset>/<model>/predictions.csv
+<OUTPUT_ROOT>/<setting>/<dataset>/<model>/run.log
 ```
-
-`metrics.json` contains phase step counts; the expected bounded smoke values
-are `train_steps=1`, `val_steps=1`, and `test_steps=1`.  `predictions.csv`
-contains valid test targets in original power units.  Do not claim a complete
-64-row smoke success until the summary and all per-combination artifacts have
-been independently checked.
-
-`Mamba` requires the optional `mamba_ssm` package compatible with the pinned
-Python 3.8 / PyTorch 2.3.1 / CUDA 11.8 environment.  The registry keeps
-`Mamba` lazy so other models can be listed without that package; a missing
-dependency is reported with the model and package name.  `Mamba` must not be
-silently replaced by `MambaSimple`.

@@ -1,79 +1,51 @@
-# FACTS 光伏功率预测
+# HuaWei-TS：纯时序光伏功率预测
 
-本仓库在保留 FACTS 核心模型、Teacher/Student、知识蒸馏、物理约束、路由与主要编码器逻辑的基础上，适配 Luoyang 和 YLJ 两套 Parquet 数据集，用于未来 4 小时光伏功率预测。
+`pure-ts` 分支是一个精简的纯时序实验入口。训练和评估只读取历史
+`power`，目标变量为功率，不使用图像、天气或其他模态。
 
-## 数据集适配
+## 数据集
 
-| 数据集 | 主配置 | 采样间隔 | 历史长度 | 预测长度 | 额定功率 |
-|---|---|---:|---:|---:|---:|
-| Luoyang | `configs/luoyang_parquet.json` | 5 分钟 | 16 点 | 48 点 | 48629.73 |
-| Luoyang tuned | `configs/luoyang_tuned.json` | 5 分钟 | 16 点 | 48 点 | 48629.73 |
-| YLJ | `configs/datasets/ylj.yaml` | 15 分钟 | 16 点 | 16 点 | 468.0 MW |
+| 数据集 | 配置 | 采样间隔 | 目标列 |
+| --- | --- | ---: | --- |
+| `skippd_luoyang` | `configs/datasets/skippd_luoyang.json` | 5 分钟 | `final_power` |
+| `pvod_station00_ylj` | `configs/datasets/pvod_station00_ylj.yaml` | 15 分钟 | `observe_power` |
 
-所有数据路径、字段、时间范围、输入输出维度、容量、缺失值规则和训练参数均由配置文件管理。
+## 保留模型
 
-- Luoyang Student 使用历史时序和历史天空图像；Teacher 额外使用未来实测 GHI 与未来图像。
-- YLJ Student 使用历史观测和气象预报；Teacher 额外使用未来实测气象，不使用图像。
-- 未来真实功率只作为监督标签，不进入 Student 的训练、验证或推理输入。
-- Luoyang 缺失图像采用因果前向保持，并通过 `image_mask` 显式标记；YLJ 使用全 False 图像掩码。
+模型注册表严格保留综合前八：
 
-## 环境
+`TSMixer`、`Pyraformer`、`SegRNN`、`Transformer`、`LightTS`、`Crossformer`、
+`FreTS`、`MICN`。
 
-推荐使用 Python 3.9、PyTorch 2.x 和 CUDA GPU：
+## 训练设置
 
-```bash
-python -m pip install -r requirements.txt
-python -m pip install pytest
-```
+支持四组设置：`24→1`、`48→1`、`48→4小时`、`96→4小时`。四小时按采样间隔
+换算为 SKIPP'D 的 48 点或 PVOD 的 16 点；一点预测始终输出 1 点。
 
-默认训练配置使用 8 张 GPU、`batch_size=64`、`num_workers=16`、`prefetch_factor=2` 和 AMP。多卡训练基于 `nn.DataParallel`。
-
-## 运行
-
-只运行 Luoyang 调优流程：
+单模型示例：
 
 ```bash
-bash scripts/run_luoyang_tuned.sh
+CUDA_VISIBLE_DEVICES=0 /opt/data/private/penv/time/bin/python run_time_series.py \
+  --dataset skippd_luoyang --model TSMixer \
+  --seq_len 24 --pred_len 1 --epochs 40 \
+  --device cuda:0 \
+  --output_dir results_pure_time_series/seq24_pred1/skippd_luoyang/TSMixer
 ```
 
-依次运行 Luoyang 和 YLJ 全流程：
+完整实验共 64 个任务，由两个 GPU 队列并行运行、每张卡内部串行：
 
 ```bash
-bash scripts/run_full_experiments.sh
+PYTHON=/opt/data/private/penv/time/bin/python \
+GPUS="0 1" EPOCHS=40 RESUME=0 \
+  bash scripts/run_all_pure_time_series.sh
 ```
 
-只运行 YLJ：
+只做有界 smoke test（每任务训练、验证、测试最多一个 batch，不跑完整 epoch）：
 
 ```bash
-bash scripts/run_full_experiments.sh --datasets ylj
+PYTHON=/opt/data/private/penv/time/bin/python \
+GPUS="0 1" \
+  bash scripts/smoke_all_pure_time_series.sh
 ```
 
-启动器会依次完成数据预检、Teacher 训练与测试、Student/KD 训练、Student 测试和输出校验。完整的前台、后台及复用 checkpoint 命令见 [RUN_COMMANDS.md](RUN_COMMANDS.md)。
-
-Luoyang 和 YLJ 默认同时生成不含样本级数据的训练监控包。监控指标、隐私边界和现场回传要求见 [MONITORING.md](MONITORING.md)。
-
-## 输出
-
-正式测试会在配置指定的 `results_root` 下生成：
-
-```text
-official_test_predictions.csv
-official_test_metrics.json
-```
-
-预测文件字段为：
-
-```text
-issue_time,target_time,horizon_minutes,y_true,y_pred
-```
-
-Luoyang 每个 `issue_time` 输出 48 个预测点，YLJ 输出 16 个预测点。指标在原始功率单位下计算，包含 15 分钟和 240 分钟的 overall、hard-delta、NRMSE 与 NMAE；归一化使用对应配置中的 `rated_power`。
-
-有效 checkpoint 由权重和同名契约文件共同组成：
-
-```text
-checkpoint.pth
-checkpoint.pth.metadata.json
-```
-
-契约记录数据集、输入维度、预测长度、额定功率和 Teacher 输入配置，避免加载不匹配的 checkpoint。
+详细说明、输出目录和恢复规则见 [PURE_TIME_SERIES.md](PURE_TIME_SERIES.md)。

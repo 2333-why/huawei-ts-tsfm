@@ -13,16 +13,20 @@ from typing import Optional
 import pytest
 
 
-EXPECTED_DATASETS = ("skippd_luoyang", "pvod_station00_ylj")
-EXPECTED_SETTINGS = ((24, 1), (48, 12))
+EXPECTED_TASKS = {
+    (24, 1, "skippd_luoyang"),
+    (24, 1, "pvod_station00_ylj"),
+    (48, 1, "skippd_luoyang"),
+    (48, 1, "pvod_station00_ylj"),
+    (48, 48, "skippd_luoyang"),
+    (48, 16, "pvod_station00_ylj"),
+    (96, 48, "skippd_luoyang"),
+    (96, 16, "pvod_station00_ylj"),
+}
+EXPECTED_SETTING_LABELS = {"seq24_pred1", "seq48_pred1", "seq48_h4", "seq96_h4"}
 EXPECTED_MODELS = (
-    "Autoformer", "Crossformer", "DLinear", "ETSformer", "FEDformer",
-    "FiLM", "FreTS", "Informer", "Koopa", "LightTS", "MICN", "MSGNet",
-    "Mamba", "MambaSimple", "MultiPatchFormer", "Nonstationary_Transformer",
-    "PAttn", "PatchTST", "Pyraformer", "Reformer", "SCINet", "SegRNN",
-    "TSMixer", "TemporalFusionTransformer", "TiDE", "TimeFilter",
-    "TimeMixer", "TimeXer", "TimesNet", "Transformer", "WPMixer",
-    "iTransformer",
+    "TSMixer", "Pyraformer", "SegRNN", "Transformer",
+    "LightTS", "Crossformer", "FreTS", "MICN",
 )
 
 
@@ -134,6 +138,7 @@ def _run_smoke(
         FAKE_FAIL_DATASET="skippd_luoyang",
     )
     environment.pop("GPUS", None)
+    environment.pop("SMOKE", None)
     if fail_model is not None:
         environment["FAKE_FAIL_MODEL"] = fail_model
     else:
@@ -156,26 +161,23 @@ def _events(record_path: Path):
     ]
 
 
-def test_smoke_expands_exactly_128_power_runs_with_required_arguments(tmp_path):
+def test_smoke_expands_exactly_64_power_runs_with_required_arguments(tmp_path):
     result, record_path, output_root = _run_smoke(tmp_path)
 
     assert result.returncode == 0, result.stdout + result.stderr
     events = _events(record_path)
     assert [event["kind"] for event in events].count("list") == 1
     runs = [event for event in events if event["kind"] == "run"]
-    assert len(runs) == 128
+    assert len(runs) == 64
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
         for event in runs
-    } == {
-        (seq_len, pred_len, dataset, model)
-        for seq_len, pred_len in EXPECTED_SETTINGS
-        for dataset in EXPECTED_DATASETS
-        for model in EXPECTED_MODELS
-    }
+    } == {(seq_len, pred_len, dataset, model)
+          for seq_len, pred_len, dataset in EXPECTED_TASKS
+          for model in EXPECTED_MODELS}
     assert {event["gpu"] for event in runs} == {"0", "1"}
-    assert sum(event["gpu"] == "0" for event in runs) == 64
-    assert sum(event["gpu"] == "1" for event in runs) == 64
+    assert sum(event["gpu"] == "0" for event in runs) == 32
+    assert sum(event["gpu"] == "1" for event in runs) == 32
     assert all(not event.get("overlap", False) for event in runs)
     gpu_zero = [event for event in runs if event["gpu"] == "0"]
     gpu_one = [event for event in runs if event["gpu"] == "1"]
@@ -194,7 +196,11 @@ def test_smoke_expands_exactly_128_power_runs_with_required_arguments(tmp_path):
         event["args"][event["args"].index("--output_dir") + 1]
         for event in runs
     ]
-    assert len(set(output_dirs)) == 128
+    assert len(set(output_dirs)) == 64
+    assert {
+        Path(path).resolve().relative_to(output_root.resolve()).parts[0]
+        for path in output_dirs
+    } == EXPECTED_SETTING_LABELS
     for path in output_dirs:
         try:
             Path(path).resolve().relative_to(output_root.resolve())
@@ -207,32 +213,56 @@ def test_smoke_expands_exactly_128_power_runs_with_required_arguments(tmp_path):
         "seq_len", "pred_len", "dataset", "model", "status", "output_dir",
         "exit_code",
     ]
-    assert len(rows[1:]) == 128
+    assert len(rows[1:]) == 64
     assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
 
 
 def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_path):
-    first, record_path, output_root = _run_smoke(tmp_path, fail_model="DLinear")
+    first, record_path, output_root = _run_smoke(tmp_path, fail_model="TSMixer")
     assert first.returncode != 0
     first_runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(first_runs) == 128
+    assert len(first_runs) == 64
 
     second, record_path, _ = _run_smoke(tmp_path, resume=True)
     assert second.returncode == 0, second.stdout + second.stderr
     all_runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(all_runs) == 130
-    retried = all_runs[128:]
+    assert len(all_runs) == 68
+    retried = all_runs[64:]
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
         for event in retried
     } == {
-        (24, 1, "skippd_luoyang", "DLinear"),
-        (48, 12, "skippd_luoyang", "DLinear"),
+        (24, 1, "skippd_luoyang", "TSMixer"),
+        (48, 1, "skippd_luoyang", "TSMixer"),
+        (48, 48, "skippd_luoyang", "TSMixer"),
+        (96, 48, "skippd_luoyang", "TSMixer"),
     }
 
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert len(rows[1:]) == 128
-    assert len({tuple(row.split("\t")[:4]) for row in rows[1:]}) == 128
+    assert len(rows[1:]) == 64
+    assert len({tuple(row.split("\t")[:4]) for row in rows[1:]}) == 64
+    assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
+
+
+def test_full_runner_uses_same_64_tasks_without_smoke_flag(tmp_path):
+    result, record_path, output_root = _run_smoke(
+        tmp_path,
+        script_name="scripts/run_all_pure_time_series.sh",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 64
+    assert {
+        (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
+        for event in runs
+    } == {(seq_len, pred_len, dataset, model)
+          for seq_len, pred_len, dataset in EXPECTED_TASKS
+          for model in EXPECTED_MODELS}
+    assert all("--smoke" not in event["args"] for event in runs)
+    assert all("--epochs" in event["args"] for event in runs)
+    rows = (output_root / "run_summary.tsv").read_text(encoding="utf-8").splitlines()
+    assert len(rows[1:]) == 64
     assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
 
 
@@ -252,63 +282,28 @@ def test_full_runner_fails_if_a_gpu_worker_stops_early(tmp_path):
     result, _, output_root = _run_smoke(
         tmp_path,
         script_name="scripts/run_all_pure_time_series.sh",
-        extra_environment={"FAKE_KILL_WORKER_MODEL": "Autoformer"},
+        extra_environment={"FAKE_KILL_WORKER_MODEL": "TSMixer"},
     )
 
     assert result.returncode != 0
     rows = (output_root / "run_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert len(rows[1:]) < 128
-
-
-@pytest.mark.parametrize(
-    ("script_name", "smoke"),
-    [
-        ("scripts/smoke_time_series_models.sh", True),
-        ("scripts/run_time_series_models.sh", False),
-    ],
-)
-def test_legacy_wrappers_preserve_128_run_dual_gpu_matrix(tmp_path, script_name, smoke):
-    result, record_path, output_root = _run_smoke(tmp_path, script_name=script_name)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 128
-    assert {
-        (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
-        for event in runs
-    } == {
-        (seq_len, pred_len, dataset, model)
-        for seq_len, pred_len in EXPECTED_SETTINGS
-        for dataset in EXPECTED_DATASETS
-        for model in EXPECTED_MODELS
-    }
-    assert {event["gpu"] for event in runs} == {"0", "1"}
-    assert sum(event["gpu"] == "0" for event in runs) == 64
-    assert sum(event["gpu"] == "1" for event in runs) == 64
-    assert all(not event.get("overlap", False) for event in runs)
-    assert len({
-        event["args"][event["args"].index("--output_dir") + 1]
-        for event in runs
-    }) == 128
-    if smoke:
-        assert all("--smoke" in event["args"] for event in runs)
-    else:
-        assert all("--smoke" not in event["args"] for event in runs)
-        assert all("--epochs" in event["args"] for event in runs)
-
-    summary_name = "smoke_summary.tsv" if smoke else "run_summary.tsv"
-    rows = (output_root / summary_name).read_text(encoding="utf-8").splitlines()
-    assert len(rows[1:]) == 128
-    assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
+    assert len(rows[1:]) < 64
 
 
 @pytest.mark.parametrize("script_name", [
     "run_all_pure_time_series.sh",
     "smoke_all_pure_time_series.sh",
-    "run_time_series_models.sh",
-    "smoke_time_series_models.sh",
 ])
 def test_orchestration_scripts_are_executable(script_name):
     script = Path(__file__).resolve().parents[1] / "scripts" / script_name
     assert script.is_file()
     assert script.stat().st_mode & stat.S_IXUSR
+
+
+@pytest.mark.parametrize("script_name", [
+    "run_time_series_models.sh",
+    "smoke_time_series_models.sh",
+])
+def test_legacy_wrappers_are_removed(script_name):
+    script = Path(__file__).resolve().parents[1] / "scripts" / script_name
+    assert not script.exists()

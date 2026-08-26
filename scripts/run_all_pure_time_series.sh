@@ -1,17 +1,55 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# ==================== 配置 ====================
+# Run the selected pure time-series models in one sequential queue per GPU.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-/opt/data/private/penv/time/bin/python}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT_DIR/results_pure_time_series}"
-SUMMARY_PATH="${SUMMARY_PATH:-$OUTPUT_ROOT/run_summary.tsv}"
+SMOKE="${SMOKE:-0}"
 EPOCHS="${EPOCHS:-40}"
 RESUME="${RESUME:-0}"
-SMOKE="${SMOKE:-0}"
 GPUS="${GPUS:-0 1}"
+
+if [[ "$SMOKE" == "1" ]]; then
+    DEFAULT_OUTPUT_ROOT="$ROOT_DIR/results_pure_time_series_smoke"
+    DEFAULT_SUMMARY_NAME="smoke_summary.tsv"
+else
+    DEFAULT_OUTPUT_ROOT="$ROOT_DIR/results_pure_time_series"
+    DEFAULT_SUMMARY_NAME="run_summary.tsv"
+fi
+OUTPUT_ROOT="${OUTPUT_ROOT:-$DEFAULT_OUTPUT_ROOT}"
+SUMMARY_PATH="${SUMMARY_PATH:-$OUTPUT_ROOT/$DEFAULT_SUMMARY_NAME}"
+
 DATASETS=("skippd_luoyang" "pvod_station00_ylj")
-SETTINGS=("24 1" "48 12")
+EXPECTED_MODELS=(
+    "TSMixer" "Pyraformer" "SegRNN" "Transformer"
+    "LightTS" "Crossformer" "FreTS" "MICN"
+)
+
+# The horizon is either one output point or four physical hours. The latter
+# depends on the source sampling interval, not on a fixed number of points.
+prediction_points() {
+    local dataset="$1"
+    local horizon="$2"
+
+    if [[ "$horizon" == "1" ]]; then
+        printf '1\n'
+        return 0
+    fi
+    if [[ "$horizon" == "4" ]]; then
+        case "$dataset" in
+            skippd_luoyang) printf '48\n' ;;
+            pvod_station00_ylj) printf '16\n' ;;
+            *)
+                echo "未知数据集: $dataset" >&2
+                return 2
+                ;;
+        esac
+        return 0
+    fi
+
+    echo "未知预测时长: $horizon" >&2
+    return 2
+}
 
 # 本脚本固定使用两张不同的显卡，默认是 GPU 0 和 GPU 1。
 read -r GPU_0 GPU_1 EXTRA_GPU <<<"$GPUS"
@@ -24,7 +62,15 @@ mkdir -p "$OUTPUT_ROOT" "$(dirname "$SUMMARY_PATH")"
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-# ==================== 获取模型列表 ====================
+# Keep these rows literal: they are the complete experiment contract.
+# Columns: output label, history points, physical horizon.
+SETTING_ROWS=(
+    "seq24_pred1 24 1"
+    "seq48_pred1 48 1"
+    "seq48_h4 48 4"
+    "seq96_h4 96 4"
+)
+
 MODEL_FILE="$TEMP_DIR/models.txt"
 if ! CUDA_VISIBLE_DEVICES="$GPU_0" \
     "$PYTHON" "$ROOT_DIR/run_time_series.py" --list-models >"$MODEL_FILE"; then
@@ -33,38 +79,39 @@ if ! CUDA_VISIBLE_DEVICES="$GPU_0" \
 fi
 mapfile -t MODELS <"$MODEL_FILE"
 
-if (( ${#MODELS[@]} != 32 )); then
-    echo "应有 32 个模型，实际读取到 ${#MODELS[@]} 个" >&2
+if (( ${#MODELS[@]} != ${#EXPECTED_MODELS[@]} )); then
+    echo "应有 ${#EXPECTED_MODELS[@]} 个模型，实际读取到 ${#MODELS[@]} 个" >&2
     exit 2
 fi
-
-declare -A MODEL_SEEN=()
-for model in "${MODELS[@]}"; do
-    if [[ -z "$model" || -n "${MODEL_SEEN[$model]:-}" ]]; then
-        echo "模型列表包含空名称或重复名称: $model" >&2
+for index in "${!EXPECTED_MODELS[@]}"; do
+    if [[ "${MODELS[$index]}" != "${EXPECTED_MODELS[$index]}" ]]; then
+        echo "模型列表顺序或名称不符合纯时序 top-8: ${MODELS[*]}" >&2
         exit 2
     fi
-    MODEL_SEEN["$model"]=1
 done
 
-# ==================== 把 128 个任务平均分给两张卡 ====================
+# ==================== 把 64 个任务平均分给两张卡 ====================
 QUEUE_0="$TEMP_DIR/gpu-0-tasks.tsv"
 QUEUE_1="$TEMP_DIR/gpu-1-tasks.tsv"
 : >"$QUEUE_0"
 : >"$QUEUE_1"
 
 task_index=0
-for setting in "${SETTINGS[@]}"; do
-    read -r seq_len pred_len <<<"$setting"
+for row in "${SETTING_ROWS[@]}"; do
+    read -r setting_label seq_len horizon <<<"$row"
     for dataset in "${DATASETS[@]}"; do
+        if ! pred_len="$(prediction_points "$dataset" "$horizon")"; then
+            exit 2
+        fi
         for model in "${MODELS[@]}"; do
+            queue="$QUEUE_0"
             if (( task_index % 2 == 0 )); then
-                printf '%s\t%s\t%s\t%s\n' \
-                    "$seq_len" "$pred_len" "$dataset" "$model" >>"$QUEUE_0"
+                queue="$QUEUE_0"
             else
-                printf '%s\t%s\t%s\t%s\n' \
-                    "$seq_len" "$pred_len" "$dataset" "$model" >>"$QUEUE_1"
+                queue="$QUEUE_1"
             fi
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$setting_label" "$seq_len" "$pred_len" "$dataset" "$model" >>"$queue"
             task_index=$((task_index + 1))
         done
     done
@@ -89,20 +136,20 @@ run_gpu_queue() {
     local gpu="$1"
     local queue_file="$2"
     local result_file="$3"
-    local seq_len pred_len dataset model output_dir log_file exit_code status
+    local setting_label seq_len pred_len dataset model output_dir log_file exit_code status
 
     : >"$result_file"
-    while IFS=$'\t' read -r seq_len pred_len dataset model; do
-        output_dir="$OUTPUT_ROOT/seq${seq_len}_pred${pred_len}/$dataset/$model"
+    while IFS=$'\t' read -r setting_label seq_len pred_len dataset model; do
+        output_dir="$OUTPUT_ROOT/$setting_label/$dataset/$model"
         log_file="$output_dir/run.log"
         mkdir -p "$output_dir"
 
         if [[ "$RESUME" == "1" ]] && results_exist "$output_dir"; then
-            echo "[跳过 GPU $gpu] seq=$seq_len pred=$pred_len / $dataset / $model"
+            echo "[跳过 GPU $gpu] $setting_label / $dataset / $model"
             exit_code=0
             status="PASS"
         else
-            echo "[运行 GPU $gpu] seq=$seq_len pred=$pred_len / $dataset / $model"
+            echo "[运行 GPU $gpu] $setting_label / $dataset / $model"
             CUDA_VISIBLE_DEVICES="$gpu" \
                 "$PYTHON" "$ROOT_DIR/run_time_series.py" \
                 --dataset "$dataset" \
@@ -120,7 +167,7 @@ run_gpu_queue() {
                 status="PASS"
             else
                 status="FAIL"
-                echo "[失败 GPU $gpu] seq=$seq_len pred=$pred_len / $dataset / $model，日志: $log_file" >&2
+                echo "[失败 GPU $gpu] $setting_label / $dataset / $model，日志: $log_file" >&2
             fi
         fi
 
