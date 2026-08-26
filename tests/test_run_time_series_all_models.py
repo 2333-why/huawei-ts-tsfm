@@ -5,7 +5,7 @@ import pytest
 import torch
 from torch import nn
 
-from models.DLinear import Model as DLinear
+from models.TSMixer import Model as TSMixer
 from run_time_series import (
     _collect_predictions,
     _dataset_and_loader,
@@ -16,13 +16,27 @@ from run_time_series import (
 )
 
 
-def _dlinear_model():
-    return DLinear(SimpleNamespace(
+EXPECTED_MODELS = (
+    "TSMixer",
+    "Pyraformer",
+    "SegRNN",
+    "Transformer",
+    "LightTS",
+    "Crossformer",
+    "FreTS",
+    "MICN",
+)
+
+
+def _tsmixer_model():
+    return TSMixer(SimpleNamespace(
         task_name="long_term_forecast",
         seq_len=2,
         pred_len=1,
         enc_in=1,
-        moving_avg=3,
+        d_model=4,
+        e_layers=1,
+        dropout=0.0,
     ))
 
 
@@ -60,7 +74,7 @@ class _CountingLoader:
 
 def test_smoke_arguments_limit_every_phase():
     args = parse_args([
-        "--dataset", "skippd_luoyang", "--model", "DLinear", "--smoke",
+        "--dataset", "skippd_luoyang", "--model", "TSMixer", "--smoke",
     ])
 
     assert (
@@ -74,7 +88,7 @@ def test_smoke_arguments_limit_every_phase():
 
 def test_smoke_overrides_unrestricted_limits():
     args = parse_args([
-        "--dataset", "skippd_luoyang", "--model", "DLinear", "--smoke",
+        "--dataset", "skippd_luoyang", "--model", "TSMixer", "--smoke",
         "--epochs", "7", "--max_train_steps", "0", "--max_eval_steps", "9",
         "--max_test_steps", "11", "--batch_size", "64",
     ])
@@ -93,7 +107,7 @@ def test_parser_accepts_point_based_history_and_prediction_lengths(
     seq_len, pred_len,
 ):
     args = parse_args([
-        "--dataset", "skippd_luoyang", "--model", "DLinear",
+        "--dataset", "skippd_luoyang", "--model", "TSMixer",
         "--seq_len", str(seq_len), "--pred_len", str(pred_len),
     ])
 
@@ -119,7 +133,7 @@ def test_length_overrides_are_forwarded_to_the_dataset(monkeypatch):
         run_time_series.DATASET_LOADERS, "skippd_luoyang", RecordingDataset
     )
     args = parse_args([
-        "--dataset", "skippd_luoyang", "--model", "DLinear",
+        "--dataset", "skippd_luoyang", "--model", "TSMixer",
         "--seq_len", "24", "--pred_len", "1",
     ])
     args.device = torch.device("cpu")
@@ -146,7 +160,7 @@ def test_pure_runner_uses_generic_power_only_dataset_contract(monkeypatch):
         run_time_series.DATASET_LOADERS, "pvod_station00_ylj", RecordingDataset
     )
     args = parse_args([
-        "--dataset", "pvod_station00_ylj", "--model", "DLinear",
+        "--dataset", "pvod_station00_ylj", "--model", "TSMixer",
         "--seq_len", "48", "--pred_len", "12",
     ])
     args.device = torch.device("cpu")
@@ -166,13 +180,13 @@ def test_pure_runner_uses_generic_power_only_dataset_contract(monkeypatch):
 def test_parser_rejects_nonpositive_sequence_lengths(option, value):
     with pytest.raises(SystemExit):
         parse_args([
-            "--dataset", "skippd_luoyang", "--model", "DLinear",
+            "--dataset", "skippd_luoyang", "--model", "TSMixer",
             option, str(value),
         ])
 
 
 def test_one_step_limit_is_exact():
-    model = _dlinear_model()
+    model = _tsmixer_model()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     loss, steps = _run_epoch(
@@ -181,7 +195,7 @@ def test_one_step_limit_is_exact():
         optimizer,
         torch.device("cpu"),
         max_steps=1,
-        model_name="DLinear",
+        model_name="TSMixer",
         label_len=2,
         pred_len=1,
     )
@@ -191,7 +205,7 @@ def test_one_step_limit_is_exact():
 
 
 def test_one_step_limit_does_not_request_a_second_batch():
-    model = _dlinear_model()
+    model = _tsmixer_model()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loader = _CountingLoader(_three_batch_loader())
 
@@ -201,7 +215,7 @@ def test_one_step_limit_does_not_request_a_second_batch():
         optimizer,
         torch.device("cpu"),
         max_steps=1,
-        model_name="DLinear",
+        model_name="TSMixer",
         label_len=2,
         pred_len=1,
     )
@@ -211,7 +225,7 @@ def test_one_step_limit_does_not_request_a_second_batch():
 
 
 def test_empty_train_loader_is_rejected_when_a_step_is_required():
-    model = _dlinear_model()
+    model = _tsmixer_model()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     with pytest.raises(RuntimeError, match="train loader is empty"):
@@ -221,7 +235,7 @@ def test_empty_train_loader_is_rejected_when_a_step_is_required():
             optimizer,
             torch.device("cpu"),
             max_steps=1,
-            model_name="DLinear",
+            model_name="TSMixer",
             label_len=2,
             pred_len=1,
         )
@@ -229,7 +243,7 @@ def test_empty_train_loader_is_rejected_when_a_step_is_required():
 
 @pytest.mark.parametrize("phase", ["val", "test"])
 def test_empty_eval_loader_is_rejected_when_a_step_is_required(phase):
-    model = _dlinear_model()
+    model = _tsmixer_model()
 
     with pytest.raises(RuntimeError, match=f"{phase} loader is empty"):
         _collect_predictions(
@@ -237,7 +251,7 @@ def test_empty_eval_loader_is_rejected_when_a_step_is_required(phase):
             [],
             torch.device("cpu"),
             max_steps=1,
-            model_name="DLinear",
+            model_name="TSMixer",
             label_len=2,
             pred_len=1,
             phase=phase,
@@ -247,7 +261,7 @@ def test_empty_eval_loader_is_rejected_when_a_step_is_required(phase):
 @pytest.mark.parametrize("phase", ["train", "val", "test"])
 @pytest.mark.parametrize("max_steps", [None, 0])
 def test_empty_required_loader_is_rejected_for_unlimited_limits(phase, max_steps):
-    model = _dlinear_model()
+    model = _tsmixer_model()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3) if phase == "train" else None
 
     with pytest.raises(RuntimeError, match=f"{phase} loader is empty"):
@@ -258,7 +272,7 @@ def test_empty_required_loader_is_rejected_for_unlimited_limits(phase, max_steps
                 optimizer,
                 torch.device("cpu"),
                 max_steps=max_steps,
-                model_name="DLinear",
+                model_name="TSMixer",
                 label_len=2,
                 pred_len=1,
                 phase=phase,
@@ -269,7 +283,7 @@ def test_empty_required_loader_is_rejected_for_unlimited_limits(phase, max_steps
                 [],
                 torch.device("cpu"),
                 max_steps=max_steps,
-                model_name="DLinear",
+                model_name="TSMixer",
                 label_len=2,
                 pred_len=1,
                 phase=phase,
@@ -277,7 +291,7 @@ def test_empty_required_loader_is_rejected_for_unlimited_limits(phase, max_steps
 
 
 def test_zero_test_limit_is_unlimited_instead_of_using_eval_limit():
-    model = _dlinear_model()
+    model = _tsmixer_model()
     loader = _three_batch_loader()
 
     result = _collect_predictions(
@@ -285,7 +299,7 @@ def test_zero_test_limit_is_unlimited_instead_of_using_eval_limit():
         loader,
         torch.device("cpu"),
         max_steps=0,
-        model_name="DLinear",
+        model_name="TSMixer",
         label_len=2,
         pred_len=1,
         phase="test",
@@ -301,7 +315,7 @@ def test_zero_test_limit_is_unlimited_instead_of_using_eval_limit():
 def test_parser_rejects_negative_step_limits(option):
     with pytest.raises(SystemExit):
         parse_args([
-            "--dataset", "skippd_luoyang", "--model", "DLinear",
+            "--dataset", "skippd_luoyang", "--model", "TSMixer",
             option, "-1",
         ])
 
@@ -310,7 +324,7 @@ def test_parser_rejects_negative_step_limits(option):
 def test_parser_rejects_nonpositive_batch_size(batch_size):
     with pytest.raises(SystemExit):
         parse_args([
-            "--dataset", "skippd_luoyang", "--model", "DLinear",
+            "--dataset", "skippd_luoyang", "--model", "TSMixer",
             "--batch_size", str(batch_size),
         ])
 
@@ -328,7 +342,7 @@ def test_runtime_rejects_invalid_limits(monkeypatch, field, value, needle):
     import run_time_series
 
     args = parse_args([
-        "--dataset", "skippd_luoyang", "--model", "DLinear",
+        "--dataset", "skippd_luoyang", "--model", "TSMixer",
     ])
     setattr(args, field, value)
     monkeypatch.setattr(
@@ -377,7 +391,7 @@ def test_test_phase_receives_its_own_zero_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_time_series,
         "_build_model",
-        lambda args, train_dataset: (_dlinear_model(), SimpleNamespace(
+        lambda args, train_dataset: (_tsmixer_model(), SimpleNamespace(
             label_len=2, pred_len=1,
         )),
     )
@@ -385,7 +399,7 @@ def test_test_phase_receives_its_own_zero_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(run_time_series, "_write_predictions", lambda *args: {})
 
     args = parse_args([
-        "--dataset", "skippd_luoyang", "--model", "DLinear",
+        "--dataset", "skippd_luoyang", "--model", "TSMixer",
         "--max_eval_steps", "1", "--max_test_steps", "0",
         "--output_dir", str(tmp_path / "output"),
     ])
@@ -424,13 +438,13 @@ def test_run_rejects_empty_unlimited_phase_before_success_artifacts(
     monkeypatch.setattr(
         run_time_series,
         "_build_model",
-        lambda args, train_dataset: (_dlinear_model(), SimpleNamespace(
+        lambda args, train_dataset: (_tsmixer_model(), SimpleNamespace(
             label_len=2, pred_len=1,
         )),
     )
 
     args = parse_args([
-        "--dataset", "skippd_luoyang", "--model", "DLinear",
+        "--dataset", "skippd_luoyang", "--model", "TSMixer",
         "--max_train_steps", "0", "--max_eval_steps", "0",
         "--max_test_steps", "0", "--output_dir", str(output_dir),
     ])
@@ -464,7 +478,7 @@ def test_runner_accepts_a_model_with_standard_forecast_inputs():
         optimizer,
         torch.device("cpu"),
         max_steps=1,
-        model_name="DLinear",
+        model_name="TSMixer",
         label_len=2,
         pred_len=1,
     )
@@ -484,15 +498,5 @@ def test_list_models_does_not_require_dataset_or_model():
 
 
 def test_list_models_prints_exact_selected_catalog(capsys):
-    expected = {
-        "Autoformer", "Crossformer", "DLinear", "ETSformer", "FEDformer",
-        "FiLM", "FreTS", "Informer", "Koopa", "LightTS", "MICN", "MSGNet",
-        "Mamba", "MambaSimple", "MultiPatchFormer", "Nonstationary_Transformer",
-        "PAttn", "PatchTST", "Pyraformer", "Reformer", "SCINet", "SegRNN",
-        "TSMixer", "TemporalFusionTransformer", "TiDE", "TimeFilter",
-        "TimeMixer", "TimeXer", "TimesNet", "Transformer", "WPMixer",
-        "iTransformer",
-    }
-
     assert main(["--list-models"]) == 0
-    assert set(capsys.readouterr().out.splitlines()) == expected
+    assert tuple(capsys.readouterr().out.splitlines()) == EXPECTED_MODELS
