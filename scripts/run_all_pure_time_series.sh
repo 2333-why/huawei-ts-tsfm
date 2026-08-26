@@ -141,9 +141,11 @@ resume_key_from_output_dir() {
 load_resume_summary() {
     [[ "$RESUME" == "1" && -s "$SUMMARY_PATH" ]] || return 0
 
-    local seq_len pred_len dataset model status output_dir exit_code key
-    while IFS=$'\t' read -r seq_len pred_len dataset model status output_dir exit_code; do
-        [[ "$status" == "PASS" && -n "$output_dir" ]] || continue
+    local seq_len pred_len dataset model status output_dir exit_code gpu key
+    while IFS=$'\t' read -r seq_len pred_len dataset model status output_dir exit_code gpu; do
+        # Summaries written before GPU provenance was added are incompatible
+        # with resume and must be rerun rather than guessed.
+        [[ "$status" == "PASS" && -n "$output_dir" && -n "$gpu" ]] || continue
         key="$(resume_key_from_output_dir "$output_dir")"
         RESUME_PASS_DIRS["$key"]="$output_dir"
     done < <(tail -n +2 "$SUMMARY_PATH")
@@ -216,9 +218,9 @@ run_gpu_queue() {
             fi
         fi
 
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$seq_len" "$pred_len" "$dataset" "$model" \
-            "$status" "$output_dir" "$exit_code" \
+            "$status" "$output_dir" "$exit_code" "$gpu" \
             >>"$result_file"
     done <"$queue_file"
 }
@@ -238,7 +240,7 @@ wait "$PID_1" || worker_failed=1
 
 # ==================== 汇总结果 ====================
 {
-    printf 'seq_len\tpred_len\tdataset\tmodel\tstatus\toutput_dir\texit_code\n'
+    printf 'seq_len\tpred_len\tdataset\tmodel\tstatus\toutput_dir\texit_code\tgpu\n'
     cat "$RESULT_0" "$RESULT_1"
 } >"$SUMMARY_PATH"
 

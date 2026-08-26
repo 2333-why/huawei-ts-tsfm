@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from pathlib import Path
 import stat
 import subprocess
@@ -225,10 +226,73 @@ def test_smoke_expands_exactly_64_power_runs_with_required_arguments(tmp_path):
     rows = summary.read_text(encoding="utf-8").splitlines()
     assert rows[0].split("\t") == [
         "seq_len", "pred_len", "dataset", "model", "status", "output_dir",
-        "exit_code",
+        "exit_code", "gpu",
     ]
     assert len(rows[1:]) == 64
     assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
+
+
+def test_summary_persists_gpu_provenance_matching_cuda_assignment(tmp_path):
+    result, record_path, output_root = _run_smoke(tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    runs = {
+        (event["seq_len"], event["pred_len"], event["dataset"], event["model"]): event
+        for event in _events(record_path)
+        if event["kind"] == "run"
+    }
+    rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
+    assert rows[0].split("\t") == [
+        "seq_len", "pred_len", "dataset", "model", "status", "output_dir",
+        "exit_code", "gpu",
+    ]
+    assert len(rows[1:]) == 64
+
+    summary_gpu_counts = Counter()
+    for row in rows[1:]:
+        fields = row.split("\t")
+        task = (int(fields[0]), int(fields[1]), fields[2], fields[3])
+        gpu = fields[7]
+        assert gpu in {"0", "1"}
+        assert gpu == runs[task]["cuda_visible_devices"]
+        summary_gpu_counts[gpu] += 1
+    assert summary_gpu_counts == Counter({"0": 32, "1": 32})
+
+
+def test_legacy_summary_without_gpu_is_incompatible_with_resume(tmp_path):
+    first, record_path, output_root = _run_smoke(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    summary_path = output_root / "smoke_summary.tsv"
+    rows = [line.split("\t") for line in summary_path.read_text().splitlines()]
+    if rows[0][-1] == "gpu":
+        rows = [row[:-1] for row in rows]
+    summary_path.write_text(
+        "\n".join("\t".join(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    second, record_path, _ = _run_smoke(tmp_path, resume=True)
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 128
+
+
+def test_resume_key_ignores_gpu_assignment(tmp_path):
+    first, record_path, output_root = _run_smoke(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    second, record_path, _ = _run_smoke(
+        tmp_path,
+        resume=True,
+        extra_environment={"GPUS": "2 3"},
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 64
+
+    rows = (output_root / "smoke_summary.tsv").read_text().splitlines()[1:]
+    assert Counter(row.split("\t")[7] for row in rows) == Counter({"2": 32, "3": 32})
 
 
 def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_path):
