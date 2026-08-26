@@ -62,8 +62,11 @@ def _nonnegative_length(value: int, *, name: str, allow_zero: bool = False) -> i
     return value
 
 
-def _target_mask(batch: tuple, target: Tensor, device: torch.device) -> Tensor:
-    metadata = batch[9] if len(batch) > 9 and isinstance(batch[9], Mapping) else {}
+def _target_mask(batch, target: Tensor, device: torch.device) -> Tensor:
+    if isinstance(batch, Mapping):
+        metadata = batch
+    else:
+        metadata = batch[9] if len(batch) > 9 and isinstance(batch[9], Mapping) else {}
     value = metadata.get("target_mask")
     if value is None:
         return torch.ones(target.shape[:2], dtype=torch.bool, device=device)
@@ -80,18 +83,24 @@ def _target_mask(batch: tuple, target: Tensor, device: torch.device) -> Tensor:
 
 
 def power_only_batch(batch, device: torch.device) -> PowerBatch:
-    """Extract channel-zero power tensors and the target validity mask.
+    """Extract normalized power tensors from a collated mapping.
 
-    ``batch`` follows the existing dataset tuple layout, where entries 0 and
-    1 are the encoder history and target windows and entry 9 contains
-    metadata.  No other batch entry is inspected.
+    The dedicated dataset emits ``history``, ``target``, ``target_mask``, and
+    ``issue_time_ns``.  The legacy tuple layout remains accepted for focused
+    compatibility tests, but no tuple-only data is created by the new loader.
     """
 
-    if not isinstance(batch, (tuple, list)) or len(batch) < 2:
+    if isinstance(batch, Mapping):
+        if "history" not in batch or "target" not in batch:
+            raise ValueError("dataset batch must contain history and target")
+        raw_x, raw_y = batch["history"], batch["target"]
+    elif isinstance(batch, (tuple, list)) and len(batch) >= 2:
+        raw_x, raw_y = batch[0], batch[1]
+    else:
         raise ValueError("dataset batch must contain at least seq_x and seq_y")
 
-    batch_x = _as_float_tensor(batch[0], name="seq_x", device=device)
-    batch_y = _as_float_tensor(batch[1], name="seq_y", device=device)
+    batch_x = _as_float_tensor(raw_x, name="history", device=device)
+    batch_y = _as_float_tensor(raw_y, name="target", device=device)
     if batch_x.ndim != 3 or batch_x.shape[-1] < 1:
         raise ValueError(
             f"expected [B, seq_len, channels] input, got {tuple(batch_x.shape)}"

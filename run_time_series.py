@@ -13,6 +13,7 @@ import csv
 import json
 import math
 import random
+from collections.abc import Mapping
 from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,8 +23,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from data_provider.data_loader_luoyang import LuoyangParquetDataset
-from data_provider.data_loader_ylj import YLJParquetDataset
+from data_provider.power_only import PowerOnlyParquetDataset
 from models.tslib_adapter import forward_power_model, power_only_batch
 from models.tslib_factory import build_model_config, build_power_model
 from models.tslib_registry import SELECTED_MODEL_NAMES
@@ -35,8 +35,8 @@ DEFAULT_CONFIGS = {
     "pvod_station00_ylj": REPO_ROOT / "configs/datasets/pvod_station00_ylj.yaml",
 }
 DATASET_LOADERS = {
-    "skippd_luoyang": LuoyangParquetDataset,
-    "pvod_station00_ylj": YLJParquetDataset,
+    "skippd_luoyang": PowerOnlyParquetDataset,
+    "pvod_station00_ylj": PowerOnlyParquetDataset,
 }
 
 
@@ -81,10 +81,6 @@ def _dataset_and_loader(args, flag: str):
         kwargs["history_points"] = seq_len
     if pred_len is not None:
         kwargs["forecast_steps"] = pred_len
-    if args.dataset == "skippd_luoyang":
-        kwargs.update(load_images=False, privileged_teacher=False)
-    else:
-        kwargs.update(privileged_teacher=False, power_only=True)
     dataset = dataset_class(**kwargs)
     loader_kwargs = {
         "batch_size": batch_size,
@@ -114,7 +110,7 @@ def _build_model(args, dataset):
 
 
 def _as_target_mask(metadata, target: torch.Tensor) -> torch.Tensor:
-    mask = metadata.get("target_mask") if isinstance(metadata, dict) else None
+    mask = metadata.get("target_mask") if isinstance(metadata, Mapping) else None
     if mask is None:
         return torch.ones(target.shape[:-1], dtype=torch.bool, device=target.device)
     mask = torch.as_tensor(mask, device=target.device, dtype=torch.bool)
@@ -236,7 +232,9 @@ def _collect_predictions(
         predictions.append(prediction.detach().cpu().numpy())
         targets.append(batch_y.detach().cpu().numpy())
         masks.append(target_mask.detach().cpu().numpy())
-        metadata = batch[9] if len(batch) > 9 and isinstance(batch[9], dict) else {}
+        metadata = batch if isinstance(batch, Mapping) else (
+            batch[9] if len(batch) > 9 and isinstance(batch[9], Mapping) else {}
+        )
         issue = metadata.get("issue_time_ns")
         if issue is None:
             issue = np.full(batch_y.shape[0], np.nan)
@@ -246,12 +244,6 @@ def _collect_predictions(
         raise RuntimeError(
             f"{phase} loader is empty; max_steps={limit_label} requires at least one batch"
         )
-        return {
-            "loss": float("nan"), "steps": 0,
-            "prediction": np.empty((0, 0, 1), np.float32),
-            "target": np.empty((0, 0, 1), np.float32),
-            "mask": np.empty((0, 0), bool), "issue_time_ns": np.empty(0),
-        }
     return {
         "loss": float(np.mean(losses)), "steps": len(predictions),
         "prediction": np.concatenate(predictions),

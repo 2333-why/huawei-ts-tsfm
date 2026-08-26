@@ -1,145 +1,19 @@
-schema_version: 1
 dataset: YLJParquet
 paths:
   parquet_file: /opt/data/private/data/PVOD/station00_ylj.parquet
-  checkpoints_root: ./checkpoints_pvod_station00
   results_root: ./results_pvod_station00
-  logs_root: ./logs_pvod_station00
-  teacher_checkpoint: ./checkpoints_pvod_station00/teacher/checkpoint.pth
-  student_checkpoint: ./checkpoints_pvod_station00/student/checkpoint.pth
 fields:
   timestamp: timestamp
   target: observe_power
-  time_series_columns:
-    - observe_power
-    - lmd_totalirrad
-    - lmd_diffuseirrad
-    - lmd_temperature
-    - lmd_pressure
-    - lmd_winddirection
-    - lmd_windspeed
-    - nwp_globalirrad
-    - nwp_directirrad
-    - nwp_temperature
-    - nwp_humidity
-    - nwp_windspeed
-    - nwp_winddirection
-    - nwp_pressure
-  history_columns:
-    - observe_power
-    - lmd_totalirrad
-    - lmd_diffuseirrad
-    - lmd_temperature
-    - lmd_pressure
-    - lmd_winddirection
-    - lmd_windspeed
-  forecast_window_columns:
-    - nwp_globalirrad
-    - nwp_directirrad
-    - nwp_temperature
-    - nwp_humidity
-    - nwp_windspeed
-    - nwp_winddirection
-    - nwp_pressure
-  time_series_scale_factors: {}
-  forecast_fallbacks:
-    nwp_globalirrad: {alternative: nwp_globalirrad, persistence: nwp_globalirrad}
-    nwp_directirrad: {alternative: nwp_directirrad, persistence: nwp_directirrad}
-    nwp_temperature: {alternative: nwp_temperature, persistence: nwp_temperature}
-    nwp_humidity: {alternative: nwp_humidity, persistence: nwp_humidity}
-    nwp_windspeed: {alternative: nwp_windspeed, persistence: nwp_windspeed}
-    nwp_winddirection: {alternative: nwp_winddirection, persistence: nwp_winddirection}
-    nwp_pressure: {alternative: nwp_pressure, persistence: nwp_pressure}
-dimensions:
-  time_series_input_dim: 14
-  history_points: 16
-  forecast_steps: 16
-  target_dim: 1
-  image_history_frames: 16
-  image_channels: 3
-  image_height: 64
-  image_width: 64
-  weather_placeholder_dim: 6
-privileged_teacher:
-  enabled: true
-  future_timeseries_columns:
-    - lmd_totalirrad
-    - lmd_diffuseirrad
-    - lmd_temperature
-    - lmd_pressure
-    - lmd_winddirection
-    - lmd_windspeed
-  future_images_enabled: false
-  exclude_target_from_inputs: true
 time:
   sampling_interval_minutes: 15
   forecast_step_minutes: 15
-  forecast_horizon_minutes: 240
-  forecast_window_shift_minutes: 240
-  evaluation_horizons_minutes: [15, 240]
-  history_order: past_first
   train_start_timestamp: '2018-08-15 16:00:00'
   test_start_timestamp: '2019-04-01 00:00:00'
   test_end_exclusive_timestamp: '2019-06-13 16:00:00'
   validation_fraction: 0.15
 power:
   power_scale: 6.6
-  max_power: 6.6
   rated_power: 6.6
   units: MW
-  model_input_normalization: divide_by_power_scale
   target_floor: 0.0
-  allow_missing_target: true
-  hard_delta_fraction: 0.10
-  direction_min_delta_fraction: 0.02
-images:
-  images_enabled: false
-  pad_value: 0.0
-missing:
-  history_fill: causal_forward_fill_then_train_mean
-  forecast_fill: paired_product_then_issue_time_persistence_then_train_mean
-  normalization: train_zscore
-  normalization_epsilon: 1.0e-6
-runtime:
-  gpu_devices: '0'
-  precision: fp32
-  num_workers: 0
-  prefetch_factor: 2
-  pin_memory: false
-  teacher_batch_size: 64
-  student_batch_size: 64
-  teacher_epochs: 40
-  student_epochs: 40
-  patience: 10
-  learning_rate: 0.0001
-monitoring:
-  enabled: true
-  level: standard
-  aggregate_only: true
-  epoch_interval: 1
-  gradient_interval_steps: 50
-  min_slice_count: 100
-  min_slice_days: 5
-  include_test_during_training: false
-  save_raw_predictions: false
-  heavy_diagnostics: [initial, best, final]
-model:
-  d_model: 512
-  n_heads: 8
-  e_layers: 2
-  d_layers: 1
-  d_ff: 2048
-  factor: 3
-  image_encoder_type: cnn
-  image_cnn_dim: 64
-  image_temporal_hidden_dim: 64
-  teacher_fuse_strategy: no_img
-  student_fuse_strategy: ts_only
-  kd_type: inter_causal
-  kd_similarity_weight: 0.001
-  kd_intervention_weight: 0.1
-  kd_intervention_min_feature_delta: 1.0e-8
-  modality_dropout_rate: 0.0
-output:
-  predictions_file: official_test_predictions.csv
-  metrics_file: official_test_metrics.json

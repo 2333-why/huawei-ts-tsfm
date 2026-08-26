@@ -31,18 +31,12 @@ def _three_batch_loader():
     for offset in range(3):
         history = torch.tensor([[[1.0 + offset], [2.0 + offset]]])
         target = torch.tensor([[[3.0 + offset]]])
-        batches.append((
-            history,
-            target,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            {"target_mask": torch.tensor([[True]])},
-        ))
+        batches.append({
+            "history": history,
+            "target": target,
+            "target_mask": torch.tensor([[True]]),
+            "issue_time_ns": torch.tensor([offset], dtype=torch.int64),
+        })
     return batches
 
 
@@ -136,7 +130,7 @@ def test_length_overrides_are_forwarded_to_the_dataset(monkeypatch):
     assert received["forecast_steps"] == 1
 
 
-def test_pvod_pure_runner_requests_power_only_dataset_mode(monkeypatch):
+def test_pure_runner_uses_generic_power_only_dataset_contract(monkeypatch):
     import run_time_series
 
     received = {}
@@ -159,7 +153,12 @@ def test_pvod_pure_runner_requests_power_only_dataset_mode(monkeypatch):
 
     _dataset_and_loader(args, "train")
 
-    assert received["power_only"] is True
+    assert received == {
+        "config_path": args.config,
+        "flag": "train",
+        "history_points": 48,
+        "forecast_steps": 12,
+    }
 
 
 @pytest.mark.parametrize("option", ["--seq_len", "--pred_len"])
