@@ -1,3 +1,4 @@
+import copy
 import csv
 import hashlib
 from types import SimpleNamespace
@@ -655,6 +656,55 @@ def test_run_epoch_reports_loss_weighted_by_valid_target_count():
 
     assert steps == 2
     assert loss == 7.0 / 4.0
+
+
+def test_run_epoch_zero_valid_batch_does_not_advance_adam_state():
+    valid_batch = {
+        "history": torch.zeros(1, 2, 1),
+        "target": torch.tensor([[[2.0]]]),
+        "target_mask": torch.tensor([[True]]),
+        "issue_time_ns": torch.tensor([0], dtype=torch.int64),
+    }
+    zero_valid_batch = {
+        "history": torch.zeros(1, 2, 1),
+        "target": torch.tensor([[[100.0]]]),
+        "target_mask": torch.tensor([[False]]),
+        "issue_time_ns": torch.tensor([1], dtype=torch.int64),
+    }
+    single_batch_model = _KnownForecast()
+    extra_zero_batch_model = copy.deepcopy(single_batch_model)
+    single_batch_optimizer = torch.optim.Adam(single_batch_model.parameters(), lr=0.01)
+    extra_zero_batch_optimizer = torch.optim.Adam(extra_zero_batch_model.parameters(), lr=0.01)
+
+    _, single_steps = _run_epoch(
+        single_batch_model,
+        [valid_batch],
+        single_batch_optimizer,
+        torch.device("cpu"),
+        max_steps=0,
+        model_name="TSMixer",
+        label_len=2,
+        pred_len=1,
+        phase="train",
+    )
+    _, extra_zero_steps = _run_epoch(
+        extra_zero_batch_model,
+        [valid_batch, zero_valid_batch],
+        extra_zero_batch_optimizer,
+        torch.device("cpu"),
+        max_steps=0,
+        model_name="TSMixer",
+        label_len=2,
+        pred_len=1,
+        phase="train",
+    )
+
+    assert single_steps == 1
+    assert extra_zero_steps == 2
+    for expected, observed in zip(
+        single_batch_model.parameters(), extra_zero_batch_model.parameters()
+    ):
+        assert torch.equal(expected, observed)
 
 
 @pytest.mark.parametrize("phase", ["train", "val"])

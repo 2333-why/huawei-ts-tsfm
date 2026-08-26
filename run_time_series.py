@@ -193,12 +193,14 @@ def _run_epoch(
                 model_name, model, batch_x, effective_label_len, effective_pred_len
             )
             loss = _masked_mse(prediction, batch_y, target_mask)
-        if training:
+        batch_valid = int(target_mask.sum().item())
+        if training and batch_valid:
             loss.backward()
             optimizer.step()
-        batch_mask = target_mask.unsqueeze(-1).to(dtype=prediction.dtype)
-        total_sse += float(((prediction.detach() - batch_y).square() * batch_mask).sum().cpu())
-        total_valid += int(target_mask.sum().item())
+        if batch_valid:
+            batch_mask = target_mask.unsqueeze(-1).to(dtype=prediction.dtype)
+            total_sse += float(((prediction.detach() - batch_y).square() * batch_mask).sum().cpu())
+            total_valid += batch_valid
         steps += 1
     if steps == 0:
         limit_label = "unlimited" if limit is None else str(limit)

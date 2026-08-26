@@ -85,8 +85,10 @@ GPUS="0 1" \
 
 `metrics.json` 的 `metrics_original_power_units` 在恢复原功率单位后计算：
 `nmae = mae / rated_power`、`nrmse = rmse / rated_power`，同时提供
-`nmae_percent` 和 `nrmse_percent`。所有误差都只统计有效目标点；若一个阶段或
-评估结果没有有效目标点则直接失败，指标误差字段写为 `null`。
+`nmae_percent` 和 `nrmse_percent`。所有误差都只统计有效目标点。训练、验证或
+测试阶段累计有效目标点为 0 时，运行直接失败且不会生成成功的
+`completion.tsv`，因此不会被 `RESUME=1` 复用；只有独立调用 metrics 函数时，
+空 mask 才返回 `count=0` 和误差字段 `null`。
 
 `completion.tsv` 是成功产物的原子完成清单，记录任务身份、运行模式、epoch、
 各阶段步数和三个产物的 SHA-256。`RESUME=1` 只有在 summary 行身份、规范输出
