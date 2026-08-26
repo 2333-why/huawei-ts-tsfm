@@ -54,7 +54,9 @@ GPUS="0 1" EPOCHS=40 RESUME=0 \
 
 设置 `RESUME=1` 会先读取上一次的 summary，只复用对应行状态为 `PASS` 且
 `best.pt`、`metrics.json` 和 `predictions.csv` 均非空的任务；失败、缺少
-summary 记录或产物不完整的任务都会重试。
+summary 记录或产物不完整的任务都会重试。summary 的最后一列 `gpu` 持久化
+实际 `CUDA_VISIBLE_DEVICES` 分配；旧版本没有该列的 summary 会被视为不兼容
+并重跑。GPU 不参与任务身份，因此更换 GPU 分配仍可复用成功结果。
 
 ## 有界 Smoke Test
 
