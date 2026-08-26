@@ -23,6 +23,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from baselines import BASELINE_NAMES, build_baseline
 from data_provider.power_only import PowerOnlyParquetDataset
 from models.tslib_adapter import forward_power_model, power_only_batch
 from models.tslib_factory import build_model_config, build_power_model
@@ -265,6 +266,60 @@ def _collect_predictions(
     }
 
 
+@torch.no_grad()
+def _collect_baseline_predictions(
+    baseline,
+    loader,
+    dataset,
+    device,
+    max_steps: Optional[int],
+    phase: str = "test",
+):
+    """Collect a baseline forecast using the same weighted result contract."""
+
+    total_sse = 0.0
+    total_valid = 0
+    predictions: List[np.ndarray] = []
+    targets: List[np.ndarray] = []
+    masks: List[np.ndarray] = []
+    issue_times: List[np.ndarray] = []
+    limit = _step_limit(max_steps)
+    batches = loader if limit is None else islice(loader, limit)
+    for batch in batches:
+        power_batch = power_only_batch(batch, device)
+        batch_x, batch_y, target_mask = power_batch.x, power_batch.y, power_batch.mask
+        prediction = baseline.predict(batch_x, batch.get("issue_time_ns"), dataset)
+        prediction = torch.as_tensor(prediction, device=device, dtype=batch_y.dtype)
+        if tuple(prediction.shape) != tuple(batch_y.shape):
+            raise ValueError(
+                "baseline prediction must have shape "
+                f"{tuple(batch_y.shape)}, got {tuple(prediction.shape)}"
+            )
+        batch_mask = target_mask.unsqueeze(-1).to(dtype=prediction.dtype)
+        total_sse += float(((prediction - batch_y).square() * batch_mask).sum().cpu())
+        total_valid += int(target_mask.sum().item())
+        predictions.append(prediction.detach().cpu().numpy())
+        targets.append(batch_y.detach().cpu().numpy())
+        masks.append(target_mask.detach().cpu().numpy())
+        issue = batch.get("issue_time_ns")
+        if issue is None:
+            issue = np.full(batch_y.shape[0], np.nan)
+        issue_times.append(torch.as_tensor(issue).detach().cpu().numpy().reshape(-1))
+    if not predictions:
+        limit_label = "unlimited" if limit is None else str(limit)
+        raise RuntimeError(
+            f"{phase} loader is empty; max_steps={limit_label} requires at least one batch"
+        )
+    if total_valid == 0:
+        raise RuntimeError(f"{phase} phase has zero valid targets")
+    return {
+        "loss": total_sse / total_valid, "steps": len(predictions),
+        "prediction": np.concatenate(predictions),
+        "target": np.concatenate(targets), "mask": np.concatenate(masks),
+        "issue_time_ns": np.concatenate(issue_times),
+    }
+
+
 def _safe_metric(value: float):
     return None if not math.isfinite(float(value)) else float(value)
 
@@ -380,7 +435,7 @@ def _write_completion_manifest(
         str(int(dataset.pred_len)),
         str(output_dir.resolve()),
         "smoke" if args.smoke else "full",
-        str(int(args.epochs)),
+        str(int(metrics_payload.get("epochs", args.epochs))),
         str(int(args.max_train_steps)),
         str(int(args.max_eval_steps)),
         str(int(args.max_test_steps)),
@@ -411,9 +466,11 @@ def run(args) -> dict:
     train_dataset, train_loader = _dataset_and_loader(args, "train")
     val_dataset, val_loader = _dataset_and_loader(args, "val")
     test_dataset, test_loader = _dataset_and_loader(args, "test")
-    model, model_config = _build_model(args, train_dataset)
-    model.to(args.device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    baseline = build_baseline(args.model, train_dataset) if args.model in BASELINE_NAMES else None
+    if baseline is None:
+        model, model_config = _build_model(args, train_dataset)
+        model.to(args.device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     if args.output_dir is None:
         root = Path(config["paths"]["results_root"])
@@ -426,80 +483,114 @@ def run(args) -> dict:
         completion_path.unlink()
     checkpoint_path = output_dir / "best.pt"
 
-    best_val = float("inf")
-    best_epoch = -1
-    history = []
-    for epoch in range(args.epochs):
-        train_loss, train_steps = _run_epoch(
-            model,
-            train_loader,
-            optimizer,
-            args.device,
-            args.max_train_steps,
-            model_name=args.model,
-            label_len=model_config.label_len,
-            pred_len=model_config.pred_len,
-            phase="train",
-        )
-        val_result = _collect_predictions(
-            model,
-            val_loader,
-            args.device,
-            args.max_eval_steps,
-            model_name=args.model,
-            label_len=model_config.label_len,
-            pred_len=model_config.pred_len,
-            phase="val",
-        )
-        val_loss = val_result["loss"]
-        criterion = val_loss if math.isfinite(val_loss) else train_loss
-        if best_epoch < 0 or criterion < best_val:
-            best_val = criterion
-            best_epoch = epoch
-            torch.save({
-                "model_name": args.model,
-                "dataset": args.dataset,
-                "config": vars(model_config),
-                "state_dict": model.state_dict(),
-                "epoch": epoch,
-                "val_loss": val_loss,
-            }, checkpoint_path)
-        history.append({
-            "epoch": epoch, "train_loss": train_loss, "train_steps": train_steps,
-            "val_loss": val_loss, "val_steps": val_result["steps"],
-        })
-        print(
-            f"Epoch {epoch + 1}/{args.epochs} "
-            f"train_loss={train_loss:.6f} ({train_steps} steps) "
-            f"val_loss={val_loss:.6f} ({val_result['steps']} steps)",
-            flush=True,
-        )
-        if args.max_train_steps and train_steps >= args.max_train_steps:
-            # A smoke run intentionally performs only the requested small
-            # number of iterations per epoch; epoch count remains explicit.
-            pass
+    if baseline is None:
+        best_val = float("inf")
+        best_epoch = -1
+        history = []
+        for epoch in range(args.epochs):
+            train_loss, train_steps = _run_epoch(
+                model,
+                train_loader,
+                optimizer,
+                args.device,
+                args.max_train_steps,
+                model_name=args.model,
+                label_len=model_config.label_len,
+                pred_len=model_config.pred_len,
+                phase="train",
+            )
+            val_result = _collect_predictions(
+                model,
+                val_loader,
+                args.device,
+                args.max_eval_steps,
+                model_name=args.model,
+                label_len=model_config.label_len,
+                pred_len=model_config.pred_len,
+                phase="val",
+            )
+            val_loss = val_result["loss"]
+            criterion = val_loss if math.isfinite(val_loss) else train_loss
+            if best_epoch < 0 or criterion < best_val:
+                best_val = criterion
+                best_epoch = epoch
+                torch.save({
+                    "model_name": args.model,
+                    "dataset": args.dataset,
+                    "config": vars(model_config),
+                    "state_dict": model.state_dict(),
+                    "epoch": epoch,
+                    "val_loss": val_loss,
+                }, checkpoint_path)
+            history.append({
+                "epoch": epoch, "train_loss": train_loss, "train_steps": train_steps,
+                "val_loss": val_loss, "val_steps": val_result["steps"],
+            })
+            print(
+                f"Epoch {epoch + 1}/{args.epochs} "
+                f"train_loss={train_loss:.6f} ({train_steps} steps) "
+                f"val_loss={val_loss:.6f} ({val_result['steps']} steps)",
+                flush=True,
+            )
+            if args.max_train_steps and train_steps >= args.max_train_steps:
+                # A smoke run intentionally performs only the requested small
+                # number of iterations per epoch; epoch count remains explicit.
+                pass
 
-    if not checkpoint_path.is_file():
-        raise RuntimeError("training did not produce a checkpoint")
-    checkpoint = torch.load(checkpoint_path, map_location=args.device)
-    model.load_state_dict(checkpoint["state_dict"])
-    test_limit = args.max_test_steps
-    test_result = _collect_predictions(
-        model,
-        test_loader,
-        args.device,
-        test_limit,
-        model_name=args.model,
-        label_len=model_config.label_len,
-        pred_len=model_config.pred_len,
-        phase="test",
-    )
+        if not checkpoint_path.is_file():
+            raise RuntimeError("training did not produce a checkpoint")
+        checkpoint = torch.load(checkpoint_path, map_location=args.device)
+        model.load_state_dict(checkpoint["state_dict"])
+        test_limit = args.max_test_steps
+        test_result = _collect_predictions(
+            model,
+            test_loader,
+            args.device,
+            test_limit,
+            model_name=args.model,
+            label_len=model_config.label_len,
+            pred_len=model_config.pred_len,
+            phase="test",
+        )
+    else:
+        effective_config = dict(config)
+        effective_config.update({
+            "seq_len": int(train_dataset.seq_len),
+            "pred_len": int(train_dataset.pred_len),
+            "history_points": int(train_dataset.seq_len),
+            "forecast_steps": int(train_dataset.pred_len),
+        })
+        baseline_payload = _json_safe(baseline.checkpoint_payload())
+        torch.save({
+            "model_name": args.model,
+            "method_name": args.model,
+            "method_type": "baseline",
+            "dataset": args.dataset,
+            "config": _json_safe(effective_config),
+            **baseline_payload,
+            "checkpoint_payload": baseline_payload,
+            "epoch": None,
+            "val_loss": None,
+        }, checkpoint_path)
+        best_val = None
+        best_epoch = None
+        history = []
+        test_result = _collect_baseline_predictions(
+            baseline,
+            test_loader,
+            test_dataset,
+            args.device,
+            args.max_test_steps,
+            phase="test",
+        )
     step_minutes = int(test_dataset.forecast_step.total_seconds() // 60)
     prediction_path = output_dir / "predictions.csv"
     metrics = _write_predictions(prediction_path, test_result, test_dataset, step_minutes)
     metrics_payload = _json_safe({
         "dataset": args.dataset,
         "model": args.model,
+        "method_type": "baseline" if baseline is not None else "neural",
+        "training_skipped": baseline is not None,
         "seq_len": int(test_dataset.seq_len),
         "pred_len": int(test_dataset.pred_len),
         "best_epoch": best_epoch,
@@ -516,7 +607,7 @@ def run(args) -> dict:
         "metrics_original_power_units": metrics,
         "rated_power": float(test_dataset.rated_power),
         "run_mode": "smoke" if args.smoke else "full",
-        "epochs": int(args.epochs),
+        "epochs": 0 if baseline is not None else int(args.epochs),
         "limits": {
             "train": int(args.max_train_steps),
             "val": int(args.max_eval_steps),
@@ -548,11 +639,19 @@ def run(args) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", choices=sorted(DATASET_LOADERS))
-    parser.add_argument("--model", choices=list(SELECTED_MODEL_NAMES))
+    parser.add_argument(
+        "--model",
+        choices=list(SELECTED_MODEL_NAMES) + list(BASELINE_NAMES),
+    )
     parser.add_argument(
         "--list-models",
         action="store_true",
         help="print the complete selected model catalog and exit",
+    )
+    parser.add_argument(
+        "--list-baselines",
+        action="store_true",
+        help="print the complete classical baseline catalog and exit",
     )
     parser.add_argument(
         "--smoke",
@@ -602,12 +701,16 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         value = getattr(args, name)
         if value is not None and value <= 0:
             parser.error(f"--{name} must be positive")
-    if args.list_models:
+    if args.list_models or args.list_baselines:
         return args
     if args.dataset is None:
-        parser.error("--dataset is required unless --list-models is used")
+        parser.error(
+            "--dataset is required unless --list-models or --list-baselines is used"
+        )
     if args.model is None:
-        parser.error("--model is required unless --list-models is used")
+        parser.error(
+            "--model is required unless --list-models or --list-baselines is used"
+        )
     if args.config is None:
         args.config = DEFAULT_CONFIGS[args.dataset]
     args.config = Path(args.config).resolve()
@@ -626,6 +729,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
     if args.list_models:
         print("\n".join(SELECTED_MODEL_NAMES))
+        return 0
+    if args.list_baselines:
+        print("\n".join(BASELINE_NAMES))
         return 0
     result = run(args)
     print(json.dumps({

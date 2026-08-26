@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from baselines import BASELINE_NAMES
 from models.tslib_adapter import forward_power_model
 from models.tslib_factory import build_power_model
 from models.tslib_registry import SELECTED_MODEL_NAMES
@@ -69,6 +70,14 @@ def test_retained_model_forecasts_supported_shapes(name, seq_len, pred_len):
 def test_removed_model_is_rejected_by_cli():
     with pytest.raises(SystemExit):
         parse_args(["--dataset", "skippd_luoyang", "--model", "DLinear"])
+
+
+@pytest.mark.parametrize("name", BASELINE_NAMES)
+def test_baseline_method_is_accepted_by_cli(name):
+    args = parse_args([
+        "--dataset", "skippd_luoyang", "--model", name,
+    ])
+    assert args.model == name
 
 
 def test_pyraformer_forwards_embedding_configuration_by_name():

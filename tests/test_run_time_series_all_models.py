@@ -9,6 +9,7 @@ import pytest
 import torch
 from torch import nn
 
+from baselines import BASELINE_NAMES
 from models.TSMixer import Model as TSMixer
 from run_time_series import (
     _collect_predictions,
@@ -522,6 +523,21 @@ def test_list_models_does_not_require_dataset_or_model():
 def test_list_models_prints_exact_selected_catalog(capsys):
     assert main(["--list-models"]) == 0
     assert tuple(capsys.readouterr().out.splitlines()) == EXPECTED_MODELS
+
+
+def test_list_baselines_does_not_require_dataset_or_model():
+    args = parse_args(["--list-baselines"])
+    assert args.list_baselines is True
+
+
+def test_list_baselines_prints_exact_baseline_catalog(capsys):
+    assert main(["--list-baselines"]) == 0
+    assert tuple(capsys.readouterr().out.splitlines()) == BASELINE_NAMES
+
+
+def test_unknown_method_is_rejected_by_cli():
+    with pytest.raises(SystemExit):
+        parse_args(["--dataset", "skippd_luoyang", "--model", "UnknownMethod"])
 
 
 def test_metrics_uses_rated_power_and_respects_target_mask():
