@@ -25,6 +25,7 @@
 单模型示例：
 
 ```bash
+cd /opt/data/private/code/pure-ts
 CUDA_VISIBLE_DEVICES=0 /opt/data/private/penv/time/bin/python run_time_series.py \
   --dataset skippd_luoyang --model TSMixer \
   --seq_len 24 --pred_len 1 --epochs 40 \

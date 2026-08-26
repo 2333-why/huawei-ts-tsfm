@@ -118,17 +118,61 @@ for row in "${SETTING_ROWS[@]}"; do
 done
 EXPECTED_TASKS=$task_index
 
+# Load reusable rows before writing the new summary. A task is resumable only
+# when its previous row was PASS for the same setting/dataset/model and all
+# three expected artifacts are non-empty.
+declare -A RESUME_PASS_DIRS=()
+resume_key() {
+    local setting_label="$1"
+    local dataset="$2"
+    local model="$3"
+    printf '%s|%s|%s' "$setting_label" "$dataset" "$model"
+}
+
+resume_key_from_output_dir() {
+    local output_dir="$1"
+    local model dataset setting_label
+    model="$(basename "$output_dir")"
+    dataset="$(basename "$(dirname "$output_dir")")"
+    setting_label="$(basename "$(dirname "$(dirname "$output_dir")")")"
+    resume_key "$setting_label" "$dataset" "$model"
+}
+
+load_resume_summary() {
+    [[ "$RESUME" == "1" && -s "$SUMMARY_PATH" ]] || return 0
+
+    local seq_len pred_len dataset model status output_dir exit_code key
+    while IFS=$'\t' read -r seq_len pred_len dataset model status output_dir exit_code; do
+        [[ "$status" == "PASS" && -n "$output_dir" ]] || continue
+        key="$(resume_key_from_output_dir "$output_dir")"
+        RESUME_PASS_DIRS["$key"]="$output_dir"
+    done < <(tail -n +2 "$SUMMARY_PATH")
+}
+
+load_resume_summary
+
 RUN_MODE_ARGS=()
 if [[ "$SMOKE" == "1" ]]; then
     RUN_MODE_ARGS=(--smoke)
 fi
 
-# RESUME=1 时，三个结果文件都存在就跳过该任务。
+# RESUME=1 时，只复用前次 summary 中 PASS 且三个结果文件非空的任务。
 results_exist() {
     local output_dir="$1"
     [[ -s "$output_dir/best.pt" \
         && -s "$output_dir/metrics.json" \
         && -s "$output_dir/predictions.csv" ]]
+}
+
+can_resume() {
+    local setting_label="$1"
+    local dataset="$2"
+    local model="$3"
+    local output_dir="$4"
+    local key
+    key="$(resume_key "$setting_label" "$dataset" "$model")"
+    [[ "${RESUME_PASS_DIRS[$key]:-}" == "$output_dir" ]] \
+        && results_exist "$output_dir"
 }
 
 # 一张卡一次只训练一个模型；两张卡的队列会同时运行。
@@ -144,7 +188,8 @@ run_gpu_queue() {
         log_file="$output_dir/run.log"
         mkdir -p "$output_dir"
 
-        if [[ "$RESUME" == "1" ]] && results_exist "$output_dir"; then
+        if [[ "$RESUME" == "1" ]] \
+            && can_resume "$setting_label" "$dataset" "$model" "$output_dir"; then
             echo "[跳过 GPU $gpu] $setting_label / $dataset / $model"
             exit_code=0
             status="PASS"

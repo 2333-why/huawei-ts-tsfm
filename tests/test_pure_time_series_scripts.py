@@ -23,6 +23,16 @@ EXPECTED_TASKS = {
     (96, 48, "skippd_luoyang"),
     (96, 16, "pvod_station00_ylj"),
 }
+EXPECTED_LABEL_BY_TASK = {
+    (24, 1, "skippd_luoyang"): "seq24_pred1",
+    (24, 1, "pvod_station00_ylj"): "seq24_pred1",
+    (48, 1, "skippd_luoyang"): "seq48_pred1",
+    (48, 1, "pvod_station00_ylj"): "seq48_pred1",
+    (48, 48, "skippd_luoyang"): "seq48_h4",
+    (48, 16, "pvod_station00_ylj"): "seq48_h4",
+    (96, 48, "skippd_luoyang"): "seq96_h4",
+    (96, 16, "pvod_station00_ylj"): "seq96_h4",
+}
 EXPECTED_SETTING_LABELS = {"seq24_pred1", "seq48_pred1", "seq48_h4", "seq96_h4"}
 EXPECTED_MODELS = (
     "TSMixer", "Pyraformer", "SegRNN", "Transformer",
@@ -201,6 +211,10 @@ def test_smoke_expands_exactly_64_power_runs_with_required_arguments(tmp_path):
         Path(path).resolve().relative_to(output_root.resolve()).parts[0]
         for path in output_dirs
     } == EXPECTED_SETTING_LABELS
+    for event, output_dir in zip(runs, output_dirs):
+        task = (event["seq_len"], event["pred_len"], event["dataset"])
+        assert Path(output_dir).resolve().relative_to(output_root.resolve()).parts[0] \
+            == EXPECTED_LABEL_BY_TASK[task]
     for path in output_dirs:
         try:
             Path(path).resolve().relative_to(output_root.resolve())
@@ -222,6 +236,18 @@ def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_p
     assert first.returncode != 0
     first_runs = [event for event in _events(record_path) if event["kind"] == "run"]
     assert len(first_runs) == 64
+    failed_event = next(
+        event for event in first_runs
+        if (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
+        == (24, 1, "skippd_luoyang", "TSMixer")
+    )
+    failed_output = Path(
+        failed_event["args"][failed_event["args"].index("--output_dir") + 1]
+    )
+    failed_output.mkdir(parents=True, exist_ok=True)
+    (failed_output / "best.pt").write_bytes(b"left by failed run")
+    (failed_output / "metrics.json").write_text("{}", encoding="utf-8")
+    (failed_output / "predictions.csv").write_text("prediction\n", encoding="utf-8")
 
     second, record_path, _ = _run_smoke(tmp_path, resume=True)
     assert second.returncode == 0, second.stdout + second.stderr

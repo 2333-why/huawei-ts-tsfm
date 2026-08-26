@@ -32,6 +32,7 @@
 进程内统一使用 `cuda:0`；环境变量中的物理卡号决定实际使用 GPU：
 
 ```bash
+cd /opt/data/private/code/pure-ts
 CUDA_VISIBLE_DEVICES=0 /opt/data/private/penv/time/bin/python run_time_series.py \
   --dataset skippd_luoyang --model TSMixer \
   --seq_len 24 --pred_len 1 --epochs 40 \
@@ -51,8 +52,9 @@ GPUS="0 1" EPOCHS=40 RESUME=0 \
   bash scripts/run_all_pure_time_series.sh
 ```
 
-设置 `RESUME=1` 会跳过已有 `best.pt`、`metrics.json` 和
-`predictions.csv` 的任务，失败或不完整任务会重试。
+设置 `RESUME=1` 会先读取上一次的 summary，只复用对应行状态为 `PASS` 且
+`best.pt`、`metrics.json` 和 `predictions.csv` 均非空的任务；失败、缺少
+summary 记录或产物不完整的任务都会重试。
 
 ## 有界 Smoke Test
 
