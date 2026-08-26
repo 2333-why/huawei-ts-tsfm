@@ -4,10 +4,15 @@ set -uo pipefail
 # Run the selected pure time-series models in one sequential queue per GPU.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-/opt/data/private/penv/time/bin/python}"
+CONFIG_PYTHON="${CONFIG_PYTHON:-$PYTHON}"
 SMOKE="${SMOKE:-0}"
 EPOCHS="${EPOCHS:-40}"
 RESUME="${RESUME:-0}"
 GPUS="${GPUS:-0 1}"
+EXPECTED_GPU_COUNT="${EXPECTED_GPU_COUNT:-2}"
+INCLUDE_BASELINES="${INCLUDE_BASELINES:-1}"
+SKIPPD_PARQUET="${SKIPPD_PARQUET:-}"
+PVOD_PARQUET="${PVOD_PARQUET:-}"
 
 if [[ "$SMOKE" == "1" ]]; then
     DEFAULT_OUTPUT_ROOT="$ROOT_DIR/results_pure_time_series_smoke"
@@ -18,7 +23,7 @@ else
 fi
 OUTPUT_ROOT="${OUTPUT_ROOT:-$DEFAULT_OUTPUT_ROOT}"
 SUMMARY_PATH="${SUMMARY_PATH:-$OUTPUT_ROOT/$DEFAULT_SUMMARY_NAME}"
-SUMMARY_HEADER=$'seq_len\tpred_len\tdataset\tmodel\tstatus\toutput_dir\texit_code\tlaunch_gpu'
+SUMMARY_HEADER=$'seq_len\tpred_len\tdataset\tmodel\tstatus\toutput_dir\texit_code\tlaunch_gpu\tdata_fingerprint'
 COMPLETION_HEADER=$'schema_version\tdataset\tmodel\tseq_len\tpred_len\toutput_dir\trun_mode\tepochs\tmax_train_steps\tmax_eval_steps\tmax_test_steps\ttrain_steps\tval_steps\ttest_steps\tbest_sha256\tpredictions_sha256\tmetrics_sha256'
 
 DATASETS=("skippd_luoyang" "pvod_station00_ylj")
@@ -58,17 +63,158 @@ prediction_points() {
     return 2
 }
 
-# 本脚本固定使用两张不同的显卡，默认是 GPU 0 和 GPU 1。
-read -r GPU_0 GPU_1 EXTRA_GPU <<<"$GPUS"
-if [[ -z "${GPU_0:-}" || -z "${GPU_1:-}" || -n "${EXTRA_GPU:-}" || "$GPU_0" == "$GPU_1" ]]; then
-    echo "GPUS 必须包含两张不同的显卡，例如: GPUS='0 1'" >&2
+if [[ ! "$EXPECTED_GPU_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "EXPECTED_GPU_COUNT 必须是正整数" >&2
     exit 2
 fi
+if [[ "$INCLUDE_BASELINES" != "0" && "$INCLUDE_BASELINES" != "1" ]]; then
+    echo "INCLUDE_BASELINES 只能是 0 或 1" >&2
+    exit 2
+fi
+
+read -r -a GPU_IDS <<<"$GPUS"
+if (( ${#GPU_IDS[@]} != EXPECTED_GPU_COUNT )); then
+    echo "GPUS 必须包含 $EXPECTED_GPU_COUNT 张不同的显卡，例如: GPUS='0 1'" >&2
+    exit 2
+fi
+declare -A SEEN_GPU_IDS=()
+for gpu in "${GPU_IDS[@]}"; do
+    if [[ -n "${SEEN_GPU_IDS[$gpu]:-}" ]]; then
+        echo "GPUS 中的显卡编号不能重复: $GPUS" >&2
+        exit 2
+    fi
+    SEEN_GPU_IDS["$gpu"]=1
+done
 
 mkdir -p "$OUTPUT_ROOT" "$(dirname "$SUMMARY_PATH")"
 OUTPUT_ROOT_CANONICAL="$(realpath -m "$OUTPUT_ROOT")"
 TEMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TEMP_DIR"' EXIT
+WORKER_PIDS=()
+
+cleanup_temp_dir() {
+    rm -rf "$TEMP_DIR"
+}
+
+collect_process_tree() {
+    local pid="$1"
+    local child
+    local -a children=()
+    mapfile -t children < <(ps -o pid= --ppid "$pid" 2>/dev/null | awk '{print $1}')
+    printf '%s\n' "$pid"
+    for child in "${children[@]}"; do
+        collect_process_tree "$child"
+    done
+}
+
+worker_is_owned() {
+    local pid="$1"
+    local parent_pid
+    parent_pid="$(ps -o ppid= -p "$pid" 2>/dev/null | awk '{print $1}')"
+    [[ "$parent_pid" == "$$" ]]
+}
+
+handle_signal() {
+    local exit_code="$1"
+    local worker pid
+    local -a process_tree=()
+    local -a worker_tree=()
+    trap - INT TERM
+    for worker in "${WORKER_PIDS[@]}"; do
+        worker_is_owned "$worker" || continue
+        worker_tree=()
+        mapfile -t worker_tree < <(collect_process_tree "$worker")
+        process_tree+=("${worker_tree[@]}")
+    done
+    if (( ${#process_tree[@]} > 0 )); then
+        kill -TERM "${process_tree[@]}" 2>/dev/null || true
+        sleep 0.2
+        kill -KILL "${process_tree[@]}" 2>/dev/null || true
+    fi
+    for pid in "${WORKER_PIDS[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+    exit "$exit_code"
+}
+
+trap cleanup_temp_dir EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
+
+sha256_file() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+declare -A RUNTIME_CONFIGS=()
+declare -A DATA_FINGERPRINTS=()
+prepare_runtime_config() {
+    local dataset="$1"
+    local source_config="$2"
+    local parquet_file="$3"
+    local runtime_config="$TEMP_DIR/$dataset.json"
+    local fingerprint_kind="default"
+    local fingerprint_config="$source_config"
+
+    if [[ -z "$parquet_file" ]]; then
+        if ! parquet_file="$("$CONFIG_PYTHON" - "$source_config" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source_path = Path(sys.argv[1])
+if source_path.suffix.lower() == ".json":
+    config = json.loads(source_path.read_text(encoding="utf-8"))
+else:
+    import yaml
+    config = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+print(Path(config["paths"]["parquet_file"]).expanduser().resolve())
+PY
+        )"; then
+            echo "无法读取 $dataset 的默认数据配置，请检查 CONFIG_PYTHON" >&2
+            return 2
+        fi
+    else
+        fingerprint_kind="override"
+        if [[ ! -f "$parquet_file" ]]; then
+            echo "$dataset 数据集地址不存在，请检查对应的 Parquet 环境变量: $parquet_file" >&2
+            return 2
+        fi
+        if ! "$CONFIG_PYTHON" - "$source_config" "$parquet_file" "$runtime_config" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source_path = Path(sys.argv[1])
+parquet_path = Path(sys.argv[2]).resolve()
+output_path = Path(sys.argv[3])
+if source_path.suffix.lower() == ".json":
+    config = json.loads(source_path.read_text(encoding="utf-8"))
+else:
+    import yaml
+    config = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+config["paths"]["parquet_file"] = str(parquet_path)
+output_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+        then
+            echo "无法为 $dataset 生成临时数据配置，请检查 CONFIG_PYTHON" >&2
+            return 2
+        fi
+        RUNTIME_CONFIGS["$dataset"]="$runtime_config"
+        fingerprint_config="$runtime_config"
+    fi
+    if [[ ! -f "$parquet_file" ]]; then
+        echo "$dataset 数据集地址不存在: $parquet_file" >&2
+        return 2
+    fi
+    DATA_FINGERPRINTS["$dataset"]="$fingerprint_kind:$({
+        sha256_file "$fingerprint_config"
+        sha256_file "$parquet_file"
+    } | sha256sum | awk '{print $1}')"
+}
+
+prepare_runtime_config \
+    "skippd_luoyang" "$ROOT_DIR/configs/datasets/skippd_luoyang.json" "$SKIPPD_PARQUET" || exit 2
+prepare_runtime_config \
+    "pvod_station00_ylj" "$ROOT_DIR/configs/datasets/pvod_station00_ylj.yaml" "$PVOD_PARQUET" || exit 2
 
 # Keep these rows literal: they are the complete experiment contract.
 # Columns: output label, history points, physical horizon.
@@ -115,7 +261,7 @@ method_is_expected() {
 }
 
 MODEL_FILE="$TEMP_DIR/models.txt"
-if ! CUDA_VISIBLE_DEVICES="$GPU_0" \
+if ! CUDA_VISIBLE_DEVICES="${GPU_IDS[0]}" \
     "$PYTHON" "$ROOT_DIR/run_time_series.py" --list-models >"$MODEL_FILE"; then
     echo "无法读取纯时序模型列表" >&2
     exit 2
@@ -133,32 +279,35 @@ for index in "${!EXPECTED_MODELS[@]}"; do
     fi
 done
 
-# Baseline discovery is independent of GPU discovery. Keep this invocation
-# device-free because baseline tasks always run on the CPU queue.
-BASELINE_FILE="$TEMP_DIR/baselines.txt"
-if ! "$PYTHON" "$ROOT_DIR/run_time_series.py" --list-baselines >"$BASELINE_FILE"; then
-    echo "无法读取经典基线列表" >&2
-    exit 2
-fi
-mapfile -t BASELINES <"$BASELINE_FILE"
-
-if (( ${#BASELINES[@]} != ${#EXPECTED_BASELINES[@]} )); then
-    echo "应有 ${#EXPECTED_BASELINES[@]} 个基线，实际读取到 ${#BASELINES[@]} 个" >&2
-    exit 2
-fi
-for index in "${!EXPECTED_BASELINES[@]}"; do
-    if [[ "${BASELINES[$index]}" != "${EXPECTED_BASELINES[$index]}" ]]; then
-        echo "基线列表顺序或名称不符合要求: ${BASELINES[*]}" >&2
+BASELINES=()
+if [[ "$INCLUDE_BASELINES" == "1" ]]; then
+    # Baseline discovery is device-free because these tasks use the CPU queue.
+    BASELINE_FILE="$TEMP_DIR/baselines.txt"
+    if ! "$PYTHON" "$ROOT_DIR/run_time_series.py" --list-baselines >"$BASELINE_FILE"; then
+        echo "无法读取经典基线列表" >&2
         exit 2
     fi
-done
+    mapfile -t BASELINES <"$BASELINE_FILE"
 
-# ==================== 把 64 个神经任务平均分给两张卡 ====================
-QUEUE_0="$TEMP_DIR/gpu-0-tasks.tsv"
-QUEUE_1="$TEMP_DIR/gpu-1-tasks.tsv"
+    if (( ${#BASELINES[@]} != ${#EXPECTED_BASELINES[@]} )); then
+        echo "应有 ${#EXPECTED_BASELINES[@]} 个基线，实际读取到 ${#BASELINES[@]} 个" >&2
+        exit 2
+    fi
+    for index in "${!EXPECTED_BASELINES[@]}"; do
+        if [[ "${BASELINES[$index]}" != "${EXPECTED_BASELINES[$index]}" ]]; then
+            echo "基线列表顺序或名称不符合要求: ${BASELINES[*]}" >&2
+            exit 2
+        fi
+    done
+fi
+
+# ==================== 把 64 个神经任务平均分给全部 GPU ====================
+GPU_QUEUES=()
+for index in "${!GPU_IDS[@]}"; do
+    GPU_QUEUES[$index]="$TEMP_DIR/gpu-$index-tasks.tsv"
+    : >"${GPU_QUEUES[$index]}"
+done
 CPU_QUEUE="$TEMP_DIR/cpu-tasks.tsv"
-: >"$QUEUE_0"
-: >"$QUEUE_1"
 : >"$CPU_QUEUE"
 
 task_index=0
@@ -169,12 +318,8 @@ for row in "${SETTING_ROWS[@]}"; do
             exit 2
         fi
         for model in "${MODELS[@]}"; do
-            queue="$QUEUE_0"
-            if (( task_index % 2 == 0 )); then
-                queue="$QUEUE_0"
-            else
-                queue="$QUEUE_1"
-            fi
+            queue_index=$((task_index % ${#GPU_IDS[@]}))
+            queue="${GPU_QUEUES[$queue_index]}"
             printf '%s\t%s\t%s\t%s\t%s\n' \
                 "$setting_label" "$seq_len" "$pred_len" "$dataset" "$model" >>"$queue"
             task_index=$((task_index + 1))
@@ -214,10 +359,6 @@ resume_key() {
     printf '%s|%s|%s' "$setting_label" "$dataset" "$model"
 }
 
-sha256_file() {
-    sha256sum "$1" | awk '{print $1}'
-}
-
 completion_is_valid() {
     local output_dir="$1"
     local expected_seq_len="$2"
@@ -230,6 +371,8 @@ completion_is_valid() {
     local max_train_steps max_eval_steps max_test_steps train_steps val_steps test_steps
     local best_sha256 predictions_sha256 metrics_sha256 extra
     local expected_mode expected_epochs expected_train_limit expected_eval_limit expected_test_limit
+    local fingerprint_file="$output_dir/data_fingerprint.txt"
+    local -a fingerprint_rows=()
 
     [[ -s "$manifest" ]] || return 1
     IFS= read -r actual_header <"$manifest" || return 1
@@ -248,6 +391,10 @@ completion_is_valid() {
         && "$seq_len" == "$expected_seq_len" \
         && "$pred_len" == "$expected_pred_len" \
         && "$manifest_output_dir" == "$output_dir" ]] || return 1
+    [[ -s "$fingerprint_file" ]] || return 1
+    mapfile -t fingerprint_rows <"$fingerprint_file"
+    (( ${#fingerprint_rows[@]} == 1 )) || return 1
+    [[ "${fingerprint_rows[0]}" == "${DATA_FINGERPRINTS[$expected_dataset]:-}" ]] || return 1
 
     if [[ "$SMOKE" == "1" ]]; then
         expected_mode="smoke"
@@ -300,9 +447,10 @@ load_resume_summary() {
     IFS= read -r actual_header <"$SUMMARY_PATH" || return 0
     [[ "$actual_header" == "$SUMMARY_HEADER" ]] || return 0
 
-    local seq_len pred_len dataset model status output_dir exit_code launch_gpu key
+    local seq_len pred_len dataset model status output_dir exit_code launch_gpu data_fingerprint extra key
     local setting_label expected_output_dir
-    while IFS=$'\t' read -r seq_len pred_len dataset model status output_dir exit_code launch_gpu; do
+    while IFS=$'\t' read -r seq_len pred_len dataset model status output_dir exit_code \
+        launch_gpu data_fingerprint extra; do
         # The exact header gate above rejects legacy schemas before any row is
         # considered. Task identity comes from the row itself, never from the
         # output path.
@@ -322,7 +470,9 @@ load_resume_summary() {
         [[ "$status" == "PASS" \
             && -n "$output_dir" \
             && "$exit_code" == "0" \
-            && "$launch_gpu" =~ ^[^[:space:]]+$ ]] || {
+            && "$launch_gpu" =~ ^[^[:space:]]+$ \
+            && "$data_fingerprint" == "${DATA_FINGERPRINTS[$dataset]:-}" \
+            && -z "$extra" ]] || {
             RESUME_INVALID_KEYS["$key"]=1
             continue
         }
@@ -362,13 +512,29 @@ can_resume() {
         && completion_is_valid "$output_dir" "$seq_len" "$pred_len" "$dataset" "$model"
 }
 
-# 一张卡一次只训练一个模型；两张卡的队列会同时运行。
+write_data_fingerprint() {
+    local output_dir="$1"
+    local dataset="$2"
+    local fingerprint_file="$output_dir/data_fingerprint.txt"
+    local temporary_file="$output_dir/.data_fingerprint.txt.tmp.$BASHPID"
+
+    if printf '%s\n' "${DATA_FINGERPRINTS[$dataset]}" >"$temporary_file" \
+        && mv -f "$temporary_file" "$fingerprint_file"; then
+        return 0
+    fi
+    rm -f "$temporary_file" "$fingerprint_file"
+    return 1
+}
+
+# 一张卡一次只训练一个模型；所有 GPU 队列同时运行。
 run_gpu_queue() {
     local gpu="$1"
     local queue_file="$2"
     local result_file="$3"
     local setting_label seq_len pred_len dataset model output_dir log_file exit_code status
-    local key launch_gpu
+    local fingerprint_file
+    local key launch_gpu config_path
+    local -a config_args
 
     : >"$result_file"
     while IFS=$'\t' read -r setting_label seq_len pred_len dataset model; do
@@ -386,9 +552,15 @@ run_gpu_queue() {
             status="PASS"
         else
             echo "[运行 GPU $gpu] $setting_label / $dataset / $model"
+            fingerprint_file="$output_dir/data_fingerprint.txt"
+            rm -f "$fingerprint_file"
+            config_path="${RUNTIME_CONFIGS[$dataset]:-}"
+            config_args=()
+            [[ -z "$config_path" ]] || config_args=(--config "$config_path")
             CUDA_VISIBLE_DEVICES="$gpu" \
                 "$PYTHON" "$ROOT_DIR/run_time_series.py" \
                 --dataset "$dataset" \
+                "${config_args[@]}" \
                 --model "$model" \
                 --seq_len "$seq_len" \
                 --pred_len "$pred_len" \
@@ -399,17 +571,19 @@ run_gpu_queue() {
                 >"$log_file" 2>&1
             exit_code=$?
 
-            if (( exit_code == 0 )); then
+            if (( exit_code == 0 )) && write_data_fingerprint "$output_dir" "$dataset"; then
                 status="PASS"
             else
+                (( exit_code != 0 )) || exit_code=1
                 status="FAIL"
                 echo "[失败 GPU $gpu] $setting_label / $dataset / $model，日志: $log_file" >&2
             fi
         fi
 
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$seq_len" "$pred_len" "$dataset" "$model" \
             "$status" "$output_dir" "$exit_code" "$launch_gpu" \
+            "${DATA_FINGERPRINTS[$dataset]}" \
             >>"$result_file"
     done <"$queue_file"
 }
@@ -420,7 +594,9 @@ run_cpu_queue() {
     local queue_file="$1"
     local result_file="$2"
     local setting_label seq_len pred_len dataset baseline output_dir log_file exit_code status epoch_value
-    local key launch_gpu
+    local fingerprint_file
+    local key launch_gpu config_path
+    local -a config_args
 
     : >"$result_file"
     while IFS=$'\t' read -r setting_label seq_len pred_len dataset baseline; do
@@ -439,9 +615,15 @@ run_cpu_queue() {
         else
             echo "[运行 CPU] $setting_label / $dataset / $baseline"
             epoch_value=0
+            fingerprint_file="$output_dir/data_fingerprint.txt"
+            rm -f "$fingerprint_file"
+            config_path="${RUNTIME_CONFIGS[$dataset]:-}"
+            config_args=()
+            [[ -z "$config_path" ]] || config_args=(--config "$config_path")
             CUDA_VISIBLE_DEVICES="" \
                 "$PYTHON" "$ROOT_DIR/run_time_series.py" \
                 --dataset "$dataset" \
+                "${config_args[@]}" \
                 --model "$baseline" \
                 --seq_len "$seq_len" \
                 --pred_len "$pred_len" \
@@ -452,42 +634,59 @@ run_cpu_queue() {
                 >"$log_file" 2>&1
             exit_code=$?
 
-            if (( exit_code == 0 )); then
+            if (( exit_code == 0 )) && write_data_fingerprint "$output_dir" "$dataset"; then
                 status="PASS"
             else
+                (( exit_code != 0 )) || exit_code=1
                 status="FAIL"
                 echo "[失败 CPU] $setting_label / $dataset / $baseline，日志: $log_file" >&2
             fi
         fi
 
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$seq_len" "$pred_len" "$dataset" "$baseline" \
             "$status" "$output_dir" "$exit_code" "$launch_gpu" \
+            "${DATA_FINGERPRINTS[$dataset]}" \
             >>"$result_file"
     done <"$queue_file"
 }
 
-# ==================== 同时启动两张 GPU 和 CPU 队列 ====================
-RESULT_0="$TEMP_DIR/gpu-0-results.tsv"
-RESULT_1="$TEMP_DIR/gpu-1-results.tsv"
+# ==================== 同时启动全部 GPU 队列和可选 CPU 队列 ====================
+GPU_RESULTS=()
+GPU_PIDS=()
+for index in "${!GPU_IDS[@]}"; do
+    GPU_RESULTS[$index]="$TEMP_DIR/gpu-$index-results.tsv"
+    run_gpu_queue \
+        "${GPU_IDS[$index]}" "${GPU_QUEUES[$index]}" "${GPU_RESULTS[$index]}" &
+    GPU_PIDS[$index]=$!
+    WORKER_PIDS+=("${GPU_PIDS[$index]}")
+done
 RESULT_CPU="$TEMP_DIR/cpu-results.tsv"
-
-run_gpu_queue "$GPU_0" "$QUEUE_0" "$RESULT_0" &
-PID_0=$!
-run_gpu_queue "$GPU_1" "$QUEUE_1" "$RESULT_1" &
-PID_1=$!
-run_cpu_queue "$CPU_QUEUE" "$RESULT_CPU" &
-PID_CPU=$!
+PID_CPU=""
+if [[ "$INCLUDE_BASELINES" == "1" ]]; then
+    run_cpu_queue "$CPU_QUEUE" "$RESULT_CPU" &
+    PID_CPU=$!
+    WORKER_PIDS+=("$PID_CPU")
+fi
 
 worker_failed=0
-wait "$PID_0" || worker_failed=1
-wait "$PID_1" || worker_failed=1
-wait "$PID_CPU" || worker_failed=1
+for index in "${!GPU_PIDS[@]}"; do
+    pid="${GPU_PIDS[$index]}"
+    wait "$pid" || worker_failed=1
+    unset "WORKER_PIDS[$index]"
+done
+if [[ -n "$PID_CPU" ]]; then
+    wait "$PID_CPU" || worker_failed=1
+    unset "WORKER_PIDS[${#GPU_IDS[@]}]"
+fi
 
 # ==================== 汇总结果 ====================
 {
     printf '%s\n' "$SUMMARY_HEADER"
-    cat "$RESULT_0" "$RESULT_1" "$RESULT_CPU"
+    cat "${GPU_RESULTS[@]}"
+    if [[ "$INCLUDE_BASELINES" == "1" ]]; then
+        cat "$RESULT_CPU"
+    fi
 } >"$SUMMARY_PATH"
 
 result_count=$(($(wc -l <"$SUMMARY_PATH") - 1))

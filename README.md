@@ -293,8 +293,8 @@ while IFS= read -r MODEL; do
 done < <("$PYTHON" run_time_series.py --list-models)
 ```
 
-可以将这段内容保存为测试机器自己的脚本，也可以直接使用第 9 节的仓库内置双 GPU
-批量脚本完成全部设置。
+可以将这段内容保存为测试机器自己的脚本，也可以直接使用第 9 节按卡数选择的内置
+多 GPU 批量脚本完成全部设置。
 
 ## 8. 经典方法怎么测试
 
@@ -362,7 +362,71 @@ done < <("$PYTHON" run_time_series.py --list-baselines)
 
 ## 9. 仓库内置的完整训练脚本
 
-### 9.1 144 项 smoke test
+### 9.1 按 GPU 数量训练全部时序模型
+
+三套多卡脚本只训练 8 个神经时序模型，不运行经典方法。它们覆盖完全相同的 64 项
+正式训练：
+
+```text
+4 组长度设置 × 2 个数据集 × 8 个神经时序模型 = 64 项
+```
+
+这里的两个预测长度是“未来 1 个采样点”和“未来 4 小时”，每个预测长度各使用两个
+历史输入长度：
+
+| 设置目录 | 历史点数 | SKIPP'D 预测点数 | PVOD 预测点数 | 物理预测长度 |
+| --- | ---: | ---: | ---: | --- |
+| `seq24_pred1` | 24 | 1 | 1 | 1 个采样点 |
+| `seq48_pred1` | 48 | 1 | 1 | 1 个采样点 |
+| `seq48_h4` | 48 | 48 | 16 | 4 小时 |
+| `seq96_h4` | 96 | 48 | 16 | 4 小时 |
+
+根据机器上可用的 GPU 数量选择一个脚本：
+
+| GPU 数量 | 训练脚本 | 默认 GPU 编号 | 每张卡的任务数 |
+| ---: | --- | --- | ---: |
+| 2 | `scripts/train_time_series_2gpu.sh` | `0 1` | 32 |
+| 4 | `scripts/train_time_series_4gpu.sh` | `0 1 2 3` | 16 |
+| 8 | `scripts/train_time_series_8gpu.sh` | `0 1 2 3 4 5 6 7` | 8 |
+
+每个脚本顶部都有下面这段醒目的数据集地址配置。把两个占位地址改成测试机器上的
+Parquet 绝对路径：
+
+```bash
+# ==================== 必须修改：数据集地址 ====================
+SKIPPD_PARQUET="${SKIPPD_PARQUET:-/REPLACE_WITH_ABSOLUTE_PATH/skippd_luoyang.parquet}"
+PVOD_PARQUET="${PVOD_PARQUET:-/REPLACE_WITH_ABSOLUTE_PATH/station00_ylj.parquet}"
+# =============================================================
+```
+
+也可以不修改脚本，运行时通过环境变量提供地址。以四卡机器为例：
+
+```bash
+PYTHON="$(command -v python)" \
+SKIPPD_PARQUET="/绝对路径/skippd_luoyang.parquet" \
+PVOD_PARQUET="/绝对路径/station00_ylj.parquet" \
+GPUS="0 1 2 3" \
+EPOCHS=40 \
+RESUME=0 \
+OUTPUT_ROOT="results_time_series_4gpu" \
+  bash scripts/train_time_series_4gpu.sh
+```
+
+双卡和八卡机器只需换成对应脚本。`GPUS` 中必须提供与脚本名称一致数量且互不重复的
+物理 GPU 编号，例如一台机器只开放编号 `2 3 6 7` 时，四卡版设置
+`GPUS="2 3 6 7"`。每张卡内部顺序训练，不会在同一张卡上并发启动两个模型。
+
+成功时终端会显示“全部 64 个实验完成”，汇总文件默认为：
+
+```text
+<OUTPUT_ROOT>/run_summary.tsv
+```
+
+脚本会对覆盖配置和 Parquet 内容计算 `data_fingerprint`。使用 `RESUME=1` 时，地址或
+内容发生变化的数据集会自动重新训练；完全相同的数据集才会复用已有结果。若要长期
+保留两次独立实验，仍建议使用不同的 `OUTPUT_ROOT`。
+
+### 9.2 144 项 smoke test（神经模型加经典方法）
 
 完整矩阵为：
 
@@ -388,7 +452,7 @@ OUTPUT_ROOT="results_pure_time_series_smoke" \
 results_pure_time_series_smoke/smoke_summary.tsv
 ```
 
-### 9.2 正式运行全部 144 项
+### 9.3 正式运行全部 144 项
 
 ```bash
 PYTHON="$(command -v python)" \
@@ -409,11 +473,15 @@ OUTPUT_ROOT="results_pure_time_series" \
 | `RESUME` | `0` | `1` 时复用通过完整校验的已有任务 |
 | `OUTPUT_ROOT` | `results_pure_time_series` | 所有任务输出根目录 |
 | `SUMMARY_PATH` | `<OUTPUT_ROOT>/run_summary.tsv` | 汇总文件路径 |
+| `SKIPPD_PARQUET` | 空，使用仓库配置 | 临时覆盖 SKIPP'D Parquet 地址 |
+| `PVOD_PARQUET` | 空，使用仓库配置 | 临时覆盖 PVOD Parquet 地址 |
+| `EXPECTED_GPU_COUNT` | `2` | 公共编排器要求的 GPU 数；通常由多卡脚本设置 |
+| `INCLUDE_BASELINES` | `1` | `0` 时只运行 64 个神经时序任务 |
 
 脚本为每个 GPU 启动一条顺序队列，并为经典方法启动一条 CPU 顺序队列。CPU 子进程
 显式设置 `CUDA_VISIBLE_DEVICES=""`，不会初始化或占用 GPU。
 
-### 9.3 中断后继续训练
+### 9.4 中断后继续训练
 
 使用相同的输出目录和 epoch，设置 `RESUME=1`：
 
@@ -427,8 +495,8 @@ OUTPUT_ROOT="results_pure_time_series" \
 ```
 
 只有 summary 身份、运行模式、epoch、阶段步数、规范输出目录、完成清单，以及
-`best.pt`、`predictions.csv`、`metrics.json` 三个 SHA-256 都匹配时，任务才会
-跳过。失败、缺失、截断、篡改或参数不一致的任务会重新运行。
+数据指纹、`best.pt`、`predictions.csv`、`metrics.json` 三个 SHA-256 都匹配时，
+任务才会跳过。失败、缺失、截断、篡改、数据变化或参数不一致的任务会重新运行。
 
 ## 10. 输出文件和通过标准
 
@@ -446,6 +514,7 @@ OUTPUT_ROOT="results_pure_time_series" \
 | `predictions.csv` | 每个 issue time、target time 和 horizon 的真实值与预测值 |
 | `metrics.json` | 原功率单位下的 MAE、RMSE、NMAE、NRMSE 等指标 |
 | `completion.tsv` | 任务身份、运行限制、阶段步数和三个产物的 SHA-256 |
+| `data_fingerprint.txt` | 批量脚本记录的配置与 Parquet 内容指纹，用于安全恢复 |
 | `run.log` | 仅由批量脚本重定向生成的标准输出和错误日志 |
 
 直接运行 `run_time_series.py` 时，日志默认显示在终端，不会自动创建 `run.log`。
@@ -464,7 +533,7 @@ head -n 6 \
   results_pure_time_series/seq24_pred1/skippd_luoyang/TSMixer/predictions.csv
 ```
 
-检查正式汇总是否恰好有 144 个任务，且全部为 `PASS`：
+使用第 9.3 节统一脚本时，检查正式汇总是否恰好有 144 个任务，且全部为 `PASS`：
 
 ```bash
 SUMMARY="results_pure_time_series/run_summary.tsv"
@@ -472,13 +541,14 @@ test "$(($(wc -l < "$SUMMARY") - 1))" -eq 144
 awk -F '\t' 'NR > 1 && $5 != "PASS" {print; failed=1} END {exit failed}' "$SUMMARY"
 ```
 
-最终通过标准：
+使用第 9.1 节多卡神经训练脚本时，把上面的 `144` 改为 `64`。最终通过标准：
 
 - 自动化测试退出码为 0。
 - 两个数据配置都能找到真实 Parquet。
 - 单模型 smoke 能生成 `best.pt`、`predictions.csv`、`metrics.json` 和
   `completion.tsv`。
-- 完整 smoke 或正式汇总包含 144 个唯一任务，所有状态均为 `PASS`。
+- 多卡神经训练汇总包含 64 个唯一任务，或统一 smoke/正式汇总包含 144 个唯一任务，
+  所有状态均为 `PASS`。
 - 神经任务的训练、验证、测试步数为正数。
 - 经典方法的训练和验证步数为 0，测试步数为正数。
 - `metrics.json` 中的指标为有限数值，预测值已限制在有效归一化功率范围。
@@ -501,8 +571,8 @@ nrmse = rmse / rated_power
 
 ### `GPUS` 参数报错
 
-内置批量脚本要求两个不同编号，例如 `GPUS="0 1"`。只有一张 GPU 时，请使用
-第 7.3 节的单 GPU 顺序训练脚本；经典方法可以完全在 CPU 上独立测试。
+双卡、四卡、八卡脚本分别要求 2、4、8 个不同编号，具体选择见第 9.1 节。只有一张
+GPU 时，请使用第 7.3 节的单 GPU 顺序训练脚本；经典方法可以完全在 CPU 上独立测试。
 
 ### CUDA 不可用或显存不足
 
