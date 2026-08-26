@@ -48,6 +48,13 @@ def _write_power_fixture(
             "rated_power": 10.0,
             "units": "kW",
         },
+        "site": {
+            "latitude": 37.427,
+            "longitude": -122.174,
+            "timezone": "America/Los_Angeles",
+            "surface_tilt": 37,
+            "surface_azimuth": 195,
+        },
     }
     config_path = root / f"power_{interval_minutes}min.json"
     config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -118,6 +125,33 @@ def test_loader_normalizes_by_configured_power_scale(synthetic_power_config):
     sample = dataset[0]
     assert sample["history"][-1, 0] == pytest.approx(0.5)
     assert sample["target"][0, 0] == pytest.approx(0.6)
+
+
+def test_loader_exposes_validated_site_and_exact_normalized_power_lookup(
+    synthetic_power_config,
+):
+    dataset = PowerOnlyParquetDataset(
+        synthetic_power_config, "train", history_points=2, forecast_steps=1
+    )
+
+    assert dataset.site_config["timezone"] == "America/Los_Angeles"
+    values = dataset.normalized_power_at(
+        ["2025-01-01 00:00:00", "2025-01-01 00:05:00", "2025-01-01 00:45:00"],
+        fallback=0.75,
+    )
+    np.testing.assert_allclose(values, [0.4, 0.5, 1.3])
+
+
+def test_loader_requires_site_metadata(tmp_path):
+    config_path = _write_power_fixture(
+        tmp_path, interval_minutes=5, values=[1.0] * 20
+    )
+    config = json.loads(config_path.read_text())
+    del config["site"]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="site"):
+        PowerOnlyParquetDataset(config_path, "train", history_points=2, forecast_steps=1)
 
 
 def test_loader_masks_missing_future_target_but_keeps_valid_window(

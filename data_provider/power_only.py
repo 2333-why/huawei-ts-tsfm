@@ -36,6 +36,89 @@ def _positive_integer(value: Any, name: str) -> int:
     return int(value)
 
 
+def _site_float(site: Any, name: str, *, minimum: float, maximum: float, inclusive_max: bool = True) -> float:
+    """Validate one finite numeric site field and return its canonical value."""
+
+    try:
+        if isinstance(site, bool):
+            raise TypeError
+        value = float(site)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"site.{name} must be a finite number") from exc
+    if not np.isfinite(value):
+        raise ValueError(f"site.{name} must be a finite number")
+    if value < minimum or (value > maximum if inclusive_max else value >= maximum):
+        bound = "]" if inclusive_max else ")"
+        raise ValueError(f"site.{name} must be in [{minimum}, {maximum}{bound}")
+    return value
+
+
+def _validate_site_config(site: Any) -> Dict[str, Any]:
+    if not isinstance(site, dict):
+        raise ValueError("site must be a mapping")
+    required = (
+        "latitude",
+        "longitude",
+        "timezone",
+        "surface_tilt",
+        "surface_azimuth",
+    )
+    missing = [name for name in required if name not in site]
+    if missing:
+        raise ValueError(f"site missing required field(s): {', '.join(missing)}")
+    timezone = site["timezone"]
+    if not isinstance(timezone, str) or not timezone.strip():
+        raise ValueError("site.timezone must be a non-empty string")
+    try:
+        pd.Timestamp("2000-01-01").tz_localize(timezone)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("site.timezone must be a valid IANA timezone") from exc
+    return {
+        "latitude": _site_float(site["latitude"], "latitude", minimum=-90.0, maximum=90.0),
+        "longitude": _site_float(site["longitude"], "longitude", minimum=-180.0, maximum=180.0),
+        "timezone": timezone,
+        "surface_tilt": _site_float(site["surface_tilt"], "surface_tilt", minimum=0.0, maximum=90.0),
+        "surface_azimuth": _site_float(
+            site["surface_azimuth"],
+            "surface_azimuth",
+            minimum=0.0,
+            maximum=360.0,
+            inclusive_max=False,
+        ),
+    }
+
+
+def _timestamp_ns_array(timestamps: Any) -> tuple[np.ndarray, tuple[int, ...], bool]:
+    """Convert scalar or array-like timestamps to naive nanosecond integers."""
+
+    scalar = np.isscalar(timestamps) or isinstance(timestamps, pd.Timestamp)
+    raw = np.asarray(timestamps)
+    original_shape = raw.shape
+    parsed = pd.to_datetime(timestamps, errors="coerce") if scalar else pd.to_datetime(
+        raw.reshape(-1), errors="coerce"
+    )
+    if isinstance(parsed, pd.Timestamp):
+        if parsed is pd.NaT:
+            raise ValueError("timestamps must contain finite values")
+        if parsed.tzinfo is not None:
+            parsed = parsed.tz_localize(None)
+        return (
+            np.asarray([parsed.to_datetime64()], dtype="datetime64[ns]").astype(np.int64),
+            (),
+            True,
+        )
+    parsed_index = pd.DatetimeIndex(parsed)
+    if parsed_index.tz is not None:
+        parsed_index = parsed_index.tz_localize(None)
+    if parsed_index.isna().any():
+        raise ValueError("timestamps must contain finite values")
+    return (
+        parsed_index.to_numpy(dtype="datetime64[ns]").astype(np.int64).reshape(-1),
+        original_shape,
+        bool(scalar),
+    )
+
+
 class PowerOnlyParquetDataset(Dataset):
     """Return exact, normalized power windows from a two-column Parquet file."""
 
@@ -58,6 +141,7 @@ class PowerOnlyParquetDataset(Dataset):
         self.fields = self.config["fields"]
         self.time_config = self.config["time"]
         self.power_config = self.config["power"]
+        self.site_config = _validate_site_config(self.config.get("site"))
         if history_points is None:
             history_points = self.config.get("history_points")
         if forecast_steps is None:
@@ -200,6 +284,85 @@ class PowerOnlyParquetDataset(Dataset):
         if not len(finite):
             raise ValueError("training interval has no finite target values")
         return float(finite.mean())
+
+    @property
+    def normalized_train_mean(self) -> float:
+        """Return the finite training mean in the model's normalized units."""
+
+        return float(self.train_mean / self.power_scale)
+
+    @property
+    def finite_training_observations(self) -> pd.DataFrame:
+        """Return finite raw observations available to a fitted baseline.
+
+        The interval is bounded by the configured training start and the
+        validation boundary, so validation and test observations cannot leak
+        into a baseline fit.
+        """
+
+        train_start = pd.Timestamp(self.time_config["train_start_timestamp"])
+        mask = (
+            (self.timestamps >= train_start)
+            & (self.timestamps < self.validation_start)
+            & np.isfinite(self._target_values_raw)
+        )
+        values = self._target_values_raw[mask]
+        return pd.DataFrame(
+            {
+                "timestamp": self.timestamps[mask],
+                "power": values,
+                "normalized_power": values / self.power_scale,
+            }
+        )
+
+    @property
+    def training_observations(self) -> pd.DataFrame:
+        """Alias for the finite observations used by baseline fitting."""
+
+        return self.finite_training_observations
+
+    @property
+    def training_timestamps(self) -> pd.DatetimeIndex:
+        return pd.DatetimeIndex(self.finite_training_observations["timestamp"])
+
+    @property
+    def training_power_values(self) -> np.ndarray:
+        return self.finite_training_observations["normalized_power"].to_numpy(dtype=np.float64)
+
+    def get_training_observations(self) -> tuple[pd.DatetimeIndex, np.ndarray]:
+        """Return finite training timestamps and normalized power values."""
+
+        return self.training_timestamps, self.training_power_values
+
+    def normalized_power_at(self, timestamps: Any, fallback: Any = 0.0) -> Any:
+        """Look up exact normalized power values, filling missing values.
+
+        Queries are intentionally exact rather than nearest-neighbor: seasonal
+        baselines must fall back when a timestamp is absent from the source
+        series. Scalar input returns a scalar and array-like input preserves its
+        shape.
+        """
+
+        query_ns, shape, scalar = _timestamp_ns_array(timestamps)
+        fallback_values = np.asarray(fallback, dtype=np.float64)
+        target_shape = (1,) if scalar else shape
+        try:
+            fallback_values = np.broadcast_to(fallback_values, target_shape).astype(
+                np.float64, copy=True
+            ).reshape(-1)
+        except ValueError as exc:
+            raise ValueError("fallback must be scalar or match timestamps") from exc
+        positions = np.searchsorted(self._timestamp_ns, query_ns)
+        in_bounds = positions < len(self._timestamp_ns)
+        safe_positions = np.minimum(positions, max(len(self._timestamp_ns) - 1, 0))
+        exact = in_bounds & (self._timestamp_ns[safe_positions] == query_ns) if len(self._timestamp_ns) else np.zeros_like(query_ns, dtype=bool)
+        if exact.any():
+            values = self._target_values_raw[safe_positions[exact]] / self.power_scale
+            finite = np.isfinite(values)
+            exact_positions = np.flatnonzero(exact)
+            fallback_values[exact_positions[finite]] = values[finite]
+        result = fallback_values[0] if scalar else fallback_values.reshape(shape)
+        return float(result) if scalar else result
 
     @staticmethod
     def _fill_history(values: np.ndarray, train_mean: float) -> np.ndarray:

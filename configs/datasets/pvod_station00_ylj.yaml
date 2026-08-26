@@ -17,3 +17,9 @@ power:
   rated_power: 6.6
   units: MW
   target_floor: 0.0
+site:
+  latitude: 38.04778
+  longitude: 114.95139
+  timezone: Asia/Shanghai
+  surface_tilt: 33
+  surface_azimuth: 180
