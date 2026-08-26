@@ -227,14 +227,68 @@ class Climatology(ForecastBaseline):
     def __init__(self, train_dataset: Any) -> None:
         super().__init__(train_dataset)
         observations = train_dataset.finite_training_observations
-        self.training_timestamps = pd.DatetimeIndex(observations["timestamp"])
-        self.training_values = observations["normalized_power"].to_numpy(dtype=np.float64)
+        timestamps = pd.DatetimeIndex(observations["timestamp"])
+        values = observations["normalized_power"].to_numpy(dtype=np.float64)
         self.training_mean = _fallback_mean(train_dataset)
-        self.training_day = _canonical_day_of_year(self.training_timestamps)
-        self.training_minute = (
-            self.training_timestamps.hour.to_numpy(dtype=np.int64) * 60
-            + self.training_timestamps.minute.to_numpy(dtype=np.int64)
+        days = _canonical_day_of_year(timestamps)
+        minutes = (
+            timestamps.hour.to_numpy(dtype=np.int64) * 60
+            + timestamps.minute.to_numpy(dtype=np.int64)
         )
+        profile = pd.DataFrame({
+            "day_of_year": days,
+            "minute_of_day": minutes,
+            "normalized_power": values,
+        }).groupby(["day_of_year", "minute_of_day"], sort=True)["normalized_power"].agg(
+            ["sum", "count"]
+        ).reset_index()
+        self.profile_day = profile["day_of_year"].to_numpy(dtype=np.int64)
+        self.profile_minute = profile["minute_of_day"].to_numpy(dtype=np.int64)
+        self.profile_sum = profile["sum"].to_numpy(dtype=np.float64)
+        self.profile_count = profile["count"].to_numpy(dtype=np.int64)
+
+    @classmethod
+    def from_checkpoint_payload(cls, payload: dict) -> "Climatology":
+        """Restore a fitted climatology without access to its source dataset."""
+
+        if not isinstance(payload, dict) or payload.get("name") != cls.name:
+            raise ValueError("checkpoint payload does not describe Climatology")
+        profile = payload.get("profile")
+        if not isinstance(profile, dict):
+            raise ValueError("Climatology checkpoint payload is missing profile")
+        try:
+            window_days = int(payload["window_days"])
+            training_mean = float(payload["training_mean"])
+            profile_day = np.asarray(profile["day_of_year"], dtype=np.int64).reshape(-1)
+            profile_minute = np.asarray(profile["minute_of_day"], dtype=np.int64).reshape(-1)
+            profile_sum = np.asarray(profile["sum_normalized_power"], dtype=np.float64).reshape(-1)
+            profile_count = np.asarray(profile["count"], dtype=np.int64).reshape(-1)
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Climatology checkpoint payload has an invalid profile") from exc
+        lengths = {
+            len(profile_day), len(profile_minute), len(profile_sum), len(profile_count),
+        }
+        if len(lengths) != 1 or window_days < 0 or not np.isfinite(training_mean):
+            raise ValueError("Climatology checkpoint payload has an invalid profile")
+        if (
+            (profile_day < 1).any()
+            or (profile_day > 365).any()
+            or (profile_minute < 0).any()
+            or (profile_minute > 1439).any()
+            or (profile_count <= 0).any()
+            or not np.isfinite(profile_sum).all()
+        ):
+            raise ValueError("Climatology checkpoint payload has an invalid profile")
+
+        instance = cls.__new__(cls)
+        ForecastBaseline.__init__(instance, None)
+        instance.window_days = window_days
+        instance.training_mean = training_mean
+        instance.profile_day = profile_day
+        instance.profile_minute = profile_minute
+        instance.profile_sum = profile_sum
+        instance.profile_count = profile_count
+        return instance
 
     def predict(self, history: torch.Tensor, issue_time_ns: Any, dataset: Any) -> torch.Tensor:
         pred_len, issue_ns = self._inputs(history, issue_time_ns, dataset)
@@ -249,14 +303,16 @@ class Climatology(ForecastBaseline):
         )
         values = np.full(len(target_times), self.training_mean, dtype=np.float64)
         for index, (day, minute) in enumerate(zip(target_day, target_minute)):
-            same_clock = self.training_minute == minute
-            distance = np.abs(self.training_day - day)
+            same_clock = self.profile_minute == minute
+            distance = np.abs(self.profile_day - day)
             circular_distance = np.minimum(distance, 365 - distance)
             selected = same_clock & (circular_distance <= self.window_days)
-            finite = self.training_values[selected]
-            finite = finite[np.isfinite(finite)]
-            if len(finite):
-                values[index] = float(finite.mean())
+            if selected.any():
+                total_count = self.profile_count[selected].sum()
+                if total_count:
+                    values[index] = float(
+                        self.profile_sum[selected].sum() / total_count
+                    )
         return _finish_prediction(values.reshape(len(issue_ns), pred_len, 1), history)
 
     def checkpoint_payload(self) -> dict:
@@ -265,7 +321,13 @@ class Climatology(ForecastBaseline):
             {
                 "window_days": self.window_days,
                 "training_mean": self.training_mean,
-                "training_observation_count": int(len(self.training_values)),
+                "training_observation_count": int(self.profile_count.sum()),
+                "profile": {
+                    "day_of_year": self.profile_day.tolist(),
+                    "minute_of_day": self.profile_minute.tolist(),
+                    "sum_normalized_power": self.profile_sum.tolist(),
+                    "count": self.profile_count.tolist(),
+                },
             }
         )
         return payload

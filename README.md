@@ -33,8 +33,10 @@
 
 1. `Persistence`：`ŷ(t+h) = x(t)`，`h = 1..H`。
 2. `SmartPersistence`：`ŷ(t+h) = x(t) * POA_clear(t+h) / POA_clear(t)`；当当前 clear-sky POA 不大于 1 W/m² 时回退为 0。
-3. `SeasonalPersistence`：`ŷ(t+h) = x_train(t+h-1 day)`；缺少对应历史点时回退为 `x(t)`。
-4. `Climatology`：对训练集内相同 clock time 且日历圆周距离不超过 15 天的观测取均值；无样本时回退为训练均值。
+3. `SeasonalPersistence`：`ŷ(t+h) = x_obs(t+h-1 day)`，读取因果可用的观测过去功率；缺少对应历史点时回退为 `x(t)`。
+4. `Climatology`：仅对训练区间内相同 clock time 且日历圆周距离不超过 15 天的观测取均值；无样本时回退为训练均值。
+
+只有 `Climatology` 的拟合限制在训练区间；`SeasonalPersistence` 在预测时读取因果可用的观测过去功率。
 
 ## 训练设置与单次运行
 
@@ -58,7 +60,7 @@ CUDA_VISIBLE_DEVICES=0 /opt/data/private/penv/time/bin/python run_time_series.py
 cd /opt/data/private/code/pure-ts
 /opt/data/private/penv/time/bin/python run_time_series.py \
   --dataset skippd_luoyang --model Persistence \
-  --seq_len 24 --pred_len 1 --device cpu \
+  --seq_len 24 --pred_len 1 --epochs 0 --device cpu \
   --output_dir results_pure_time_series/seq24_pred1/skippd_luoyang/Persistence
 ```
 

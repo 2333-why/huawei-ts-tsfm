@@ -289,7 +289,7 @@ def test_smoke_expands_exactly_96_runs_with_gpu_neural_and_cpu_baseline_queues(t
     assert {event["gpu"] for event in neural_runs} == {"0", "1"}
     assert sum(event["gpu"] == "0" for event in neural_runs) == 32
     assert sum(event["gpu"] == "1" for event in neural_runs) == 32
-    assert all(event["gpu"] is None for event in baseline_runs)
+    assert all(event["cuda_visible_devices"] == "" for event in baseline_runs)
     assert all(not event.get("overlap", False) for event in runs)
     gpu_zero = [event for event in neural_runs if event["gpu"] == "0"]
     gpu_one = [event for event in neural_runs if event["gpu"] == "1"]
@@ -384,7 +384,7 @@ def test_summary_persists_launch_gpu_provenance_matching_cuda_assignment(tmp_pat
         launch_gpu = fields[7]
         if task[3] in EXPECTED_BASELINES:
             assert launch_gpu == "cpu"
-            assert runs[task]["cuda_visible_devices"] is None
+            assert runs[task]["cuda_visible_devices"] == ""
         else:
             assert launch_gpu in {"0", "1"}
             assert launch_gpu == runs[task]["cuda_visible_devices"]
@@ -752,7 +752,7 @@ def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_p
     assert retried_tasks
     for task, prior_gpu in first_gpu.items():
         expected_gpu = retried_gpu[task] if task in retried_tasks else (
-            "cpu" if prior_gpu is None else prior_gpu
+            "cpu" if prior_gpu in (None, "") else prior_gpu
         )
         assert summary_gpu[task] == expected_gpu
 
@@ -780,6 +780,11 @@ def test_full_runner_uses_same_96_tasks_without_smoke_flag(tmp_path):
     assert all(
         event["args"][event["args"].index("--device") + 1]
         == ("cpu" if event["model"] in EXPECTED_BASELINES else "cuda:0")
+        for event in runs
+    )
+    assert all(
+        event["args"][event["args"].index("--epochs") + 1]
+        == ("0" if event["model"] in EXPECTED_BASELINES else "40")
         for event in runs
     )
     rows = (output_root / "run_summary.tsv").read_text(encoding="utf-8").splitlines()

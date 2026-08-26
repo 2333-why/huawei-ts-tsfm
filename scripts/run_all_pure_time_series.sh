@@ -412,12 +412,12 @@ run_gpu_queue() {
     done <"$queue_file"
 }
 
-# Baselines are evaluated serially in one CPU queue. Unset any inherited CUDA
-# visibility so a CPU task cannot accidentally claim a GPU.
+# Baselines are evaluated serially in one CPU queue. Keep CUDA visibility
+# explicitly empty so a CPU task cannot accidentally claim or initialize a GPU.
 run_cpu_queue() {
     local queue_file="$1"
     local result_file="$2"
-    local setting_label seq_len pred_len dataset baseline output_dir log_file exit_code status
+    local setting_label seq_len pred_len dataset baseline output_dir log_file exit_code status epoch_value
     local key launch_gpu
 
     : >"$result_file"
@@ -436,13 +436,14 @@ run_cpu_queue() {
             status="PASS"
         else
             echo "[运行 CPU] $setting_label / $dataset / $baseline"
-            env -u CUDA_VISIBLE_DEVICES \
+            epoch_value=0
+            CUDA_VISIBLE_DEVICES="" \
                 "$PYTHON" "$ROOT_DIR/run_time_series.py" \
                 --dataset "$dataset" \
                 --model "$baseline" \
                 --seq_len "$seq_len" \
                 --pred_len "$pred_len" \
-                --epochs "$EPOCHS" \
+                --epochs "$epoch_value" \
                 "${RUN_MODE_ARGS[@]}" \
                 --device cpu \
                 --output_dir "$output_dir" \

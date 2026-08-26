@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 import torch
 
-from baselines import BASELINE_NAMES, build_baseline, load_baseline_class
+from baselines import BASELINE_NAMES, Climatology, build_baseline, load_baseline_class
 from baselines.methods import clear_sky_poa
 from data_provider.power_only import PowerOnlyParquetDataset
 
@@ -115,6 +115,23 @@ def test_smart_persistence_uses_clear_sky_ratio_and_current_power(
     np.testing.assert_allclose(prediction.numpy(), [[[0.2], [0.4]]])
 
 
+def test_smart_persistence_treats_one_w_m2_as_nighttime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    dataset = _dataset(tmp_path)
+    baseline = build_baseline("SmartPersistence", dataset)
+    monkeypatch.setattr(
+        "baselines.methods.clear_sky_poa",
+        lambda site_config, naive_local_times: np.asarray([1.0, 100.0, 100.0]),
+    )
+    history = torch.tensor([[[0.05], [0.50]]], dtype=torch.float32)
+
+    prediction = baseline.predict(history, _ns("2025-01-02 00:00:00"), dataset)
+
+    np.testing.assert_allclose(prediction.numpy(), [[[0.0], [0.0]]])
+    assert baseline.checkpoint_payload()["clear_sky_denominator_threshold_w_m2"] == 1.0
+
+
 def test_seasonal_persistence_uses_exact_previous_day_and_falls_back_per_step(
     tmp_path: Path,
 ):
@@ -163,6 +180,25 @@ def test_climatology_uses_training_only_circular_same_clock_bucket(tmp_path: Pat
     np.testing.assert_allclose(prediction.numpy(), [[[0.3], [0.3]]])
 
 
+def test_climatology_checkpoint_restores_without_training_observations(tmp_path: Path):
+    dataset = _dataset(tmp_path)
+    baseline = build_baseline("Climatology", dataset)
+    history = torch.tensor([[[0.10], [0.20]]], dtype=torch.float32)
+    issue_time_ns = _ns("2025-01-02 00:00:00")
+
+    expected = baseline.predict(history, issue_time_ns, dataset)
+    payload = json.loads(json.dumps(baseline.checkpoint_payload()))
+
+    dataset._target_values_raw[:] = np.nan
+    dataset.parquet_path.unlink()
+    restored = Climatology.from_checkpoint_payload(payload)
+    actual = restored.predict(history, issue_time_ns, dataset)
+
+    np.testing.assert_allclose(actual.numpy(), expected.numpy())
+    assert payload["profile"]["day_of_year"]
+    assert payload["profile"]["minute_of_day"]
+
+
 @pytest.mark.parametrize(
     "site_override",
     [
@@ -180,6 +216,16 @@ def test_dataset_rejects_malformed_site_fields(tmp_path: Path, site_override: di
     config_path.write_text(json.dumps(config), encoding="utf-8")
 
     with pytest.raises(ValueError, match="site"):
+        PowerOnlyParquetDataset(config_path, "train", history_points=2, forecast_steps=2)
+
+
+def test_dataset_rejects_unknown_nonempty_timezone(tmp_path: Path):
+    config_path = _write_fixture(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["site"]["timezone"] = "Mars/Olympus"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="site.timezone"):
         PowerOnlyParquetDataset(config_path, "train", history_points=2, forecast_steps=2)
 
 

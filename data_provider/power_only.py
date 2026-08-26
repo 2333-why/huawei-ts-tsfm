@@ -71,7 +71,7 @@ def _validate_site_config(site: Any) -> Dict[str, Any]:
         raise ValueError("site.timezone must be a non-empty string")
     try:
         pd.Timestamp("2000-01-01").tz_localize(timezone)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, KeyError) as exc:
         raise ValueError("site.timezone must be a valid IANA timezone") from exc
     return {
         "latitude": _site_float(site["latitude"], "latitude", minimum=-90.0, maximum=90.0),

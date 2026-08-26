@@ -70,9 +70,12 @@ def _read_config(path: Path) -> dict:
         return yaml.safe_load(handle)
 
 
-def _seed_everything(seed: int) -> None:
+def _seed_everything(seed: int, *, baseline: bool = False) -> None:
     random.seed(seed)
     np.random.seed(seed)
+    if baseline:
+        torch.random.default_generator.manual_seed(seed)
+        return
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
@@ -156,8 +159,10 @@ def _validate_runtime_args(args) -> None:
     batch_size = int(getattr(args, "batch_size"))
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    if int(getattr(args, "epochs")) < 1:
-        raise ValueError("epochs must be at least 1")
+    epochs = int(getattr(args, "epochs"))
+    is_baseline = getattr(args, "model", None) in BASELINE_NAMES
+    if epochs < 0 or (epochs == 0 and not is_baseline):
+        raise ValueError("epochs must be at least 1 for neural models")
     for name in ("seq_len", "pred_len"):
         value = getattr(args, name, None)
         if value is not None and int(value) <= 0:
@@ -460,11 +465,11 @@ def _write_completion_manifest(
 
 def run(args) -> dict:
     _validate_runtime_args(args)
-    _seed_everything(args.seed)
-    args.device = _device_from_arg(args.device)
+    is_baseline = args.model in BASELINE_NAMES
+    _seed_everything(args.seed, baseline=is_baseline)
+    args.device = torch.device("cpu") if is_baseline else _device_from_arg(args.device)
     config = _read_config(args.config)
     train_dataset, train_loader = _dataset_and_loader(args, "train")
-    is_baseline = args.model in BASELINE_NAMES
     if is_baseline:
         val_dataset = val_loader = None
     else:
@@ -521,6 +526,8 @@ def run(args) -> dict:
                 torch.save({
                     "model_name": args.model,
                     "dataset": args.dataset,
+                    "method_type": "neural",
+                    "training_skipped": False,
                     "config": vars(model_config),
                     "state_dict": model.state_dict(),
                     "epoch": epoch,
@@ -724,8 +731,8 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         args.max_eval_steps = 1
         args.max_test_steps = 1
         args.batch_size = 2
-    if args.epochs < 1:
-        parser.error("--epochs must be at least 1")
+    if args.epochs < 0 or (args.epochs == 0 and args.model not in BASELINE_NAMES):
+        parser.error("--epochs must be at least 1 for neural models")
     return args
 
 

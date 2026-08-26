@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -157,6 +158,108 @@ def test_persistence_run_does_not_construct_validation_split(
     result = run_time_series.run(_runner_args(config_path, output_dir))
 
     assert result["payload"]["phase_steps"] == {"train": 0, "val": 0, "test": 1}
+
+
+def test_baseline_run_forces_cpu_without_cuda_api_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    config_path = _write_runner_fixture(tmp_path)
+    args = run_time_series.parse_args([
+        "--dataset", "skippd_luoyang", "--model", "Persistence",
+        "--config", str(config_path), "--seq_len", "2", "--pred_len", "1",
+        "--device", "cuda", "--output_dir", str(tmp_path / "output"),
+    ])
+
+    def unexpected_cuda_call(*unused):
+        raise AssertionError("baseline run touched CUDA")
+
+    monkeypatch.setattr(run_time_series.torch, "manual_seed", unexpected_cuda_call)
+    monkeypatch.setattr(run_time_series.torch.cuda, "is_available", unexpected_cuda_call)
+    monkeypatch.setattr(run_time_series.torch.cuda, "manual_seed_all", unexpected_cuda_call)
+    monkeypatch.setattr(run_time_series, "_device_from_arg", unexpected_cuda_call)
+
+    run_time_series.run(args)
+
+    assert args.device == torch.device("cpu")
+
+
+def test_baseline_parser_accepts_explicit_zero_epochs():
+    args = run_time_series.parse_args([
+        "--dataset", "skippd_luoyang", "--model", "Persistence", "--epochs", "0",
+    ])
+
+    assert args.epochs == 0
+
+
+@pytest.mark.parametrize("case", ["empty", "zero_valid"])
+def test_baseline_collector_rejects_empty_or_zero_valid_target_batches(
+    tmp_path: Path, case: str,
+):
+    config_path = _write_runner_fixture(tmp_path)
+    dataset = PowerOnlyParquetDataset(config_path, "test", history_points=2, forecast_steps=1)
+    baseline = build_baseline("Persistence", dataset)
+    loader = [] if case == "empty" else [{
+        "history": torch.tensor([[[0.01], [0.02]]]),
+        "target": torch.tensor([[[0.03]]]),
+        "target_mask": torch.tensor([[False]]),
+        "issue_time_ns": torch.tensor([0], dtype=torch.int64),
+    }]
+
+    expected = "loader is empty" if case == "empty" else "zero valid targets"
+    with pytest.raises(RuntimeError, match=expected):
+        run_time_series._collect_baseline_predictions(
+            baseline, loader, dataset, torch.device("cpu"), max_steps=1,
+        )
+
+
+def test_climatology_runner_stores_complete_restore_payload(tmp_path: Path):
+    config_path = _write_runner_fixture(tmp_path)
+    output_dir = tmp_path / "climatology-output"
+    args = run_time_series.parse_args([
+        "--dataset", "skippd_luoyang", "--model", "Climatology",
+        "--config", str(config_path), "--seq_len", "2", "--pred_len", "1",
+        "--smoke", "--device", "cpu", "--output_dir", str(output_dir),
+    ])
+
+    result = run_time_series.run(args)
+    checkpoint = torch.load(result["checkpoint"], map_location="cpu")
+    payload = checkpoint["checkpoint_payload"]
+
+    assert payload["method_name"] == "Climatology"
+    assert payload["profile"]["day_of_year"]
+    assert payload["profile"]["minute_of_day"]
+
+
+def test_neural_checkpoint_records_method_discriminator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    config_path = _write_runner_fixture(tmp_path)
+    output_dir = tmp_path / "neural-output"
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = torch.nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+            return x_enc[:, -1:, :] * self.scale
+
+    monkeypatch.setattr(
+        run_time_series,
+        "_build_model",
+        lambda *unused: (TinyModel(), SimpleNamespace(label_len=2, pred_len=1)),
+    )
+    args = run_time_series.parse_args([
+        "--dataset", "skippd_luoyang", "--model", "TSMixer",
+        "--config", str(config_path), "--seq_len", "2", "--pred_len", "1",
+        "--smoke", "--device", "cpu", "--output_dir", str(output_dir),
+    ])
+
+    result = run_time_series.run(args)
+    checkpoint = torch.load(result["checkpoint"], map_location="cpu")
+
+    assert checkpoint["method_type"] == "neural"
+    assert checkpoint["training_skipped"] is False
 
 
 @pytest.mark.parametrize("name", BASELINE_NAMES)
