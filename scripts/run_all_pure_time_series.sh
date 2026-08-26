@@ -18,6 +18,7 @@ else
 fi
 OUTPUT_ROOT="${OUTPUT_ROOT:-$DEFAULT_OUTPUT_ROOT}"
 SUMMARY_PATH="${SUMMARY_PATH:-$OUTPUT_ROOT/$DEFAULT_SUMMARY_NAME}"
+SUMMARY_HEADER=$'seq_len\tpred_len\tdataset\tmodel\tstatus\toutput_dir\texit_code\tlaunch_gpu'
 
 DATASETS=("skippd_luoyang" "pvod_station00_ylj")
 EXPECTED_MODELS=(
@@ -142,10 +143,14 @@ resume_key_from_output_dir() {
 load_resume_summary() {
     [[ "$RESUME" == "1" && -s "$SUMMARY_PATH" ]] || return 0
 
+    local actual_header
+    IFS= read -r actual_header <"$SUMMARY_PATH" || return 0
+    [[ "$actual_header" == "$SUMMARY_HEADER" ]] || return 0
+
     local seq_len pred_len dataset model status output_dir exit_code launch_gpu key
     while IFS=$'\t' read -r seq_len pred_len dataset model status output_dir exit_code launch_gpu; do
-        # Summaries written before GPU provenance was added are incompatible
-        # with resume and must be rerun rather than guessed.
+        # The exact header gate above rejects legacy schemas before any row is
+        # considered; malformed current-schema rows are skipped as well.
         [[ "$status" == "PASS" && -n "$output_dir" && -n "$launch_gpu" ]] || continue
         key="$(resume_key_from_output_dir "$output_dir")"
         RESUME_PASS_DIRS["$key"]="$output_dir"
@@ -246,7 +251,7 @@ wait "$PID_1" || worker_failed=1
 
 # ==================== 汇总结果 ====================
 {
-    printf 'seq_len\tpred_len\tdataset\tmodel\tstatus\toutput_dir\texit_code\tlaunch_gpu\n'
+    printf '%s\n' "$SUMMARY_HEADER"
     cat "$RESULT_0" "$RESULT_1"
 } >"$SUMMARY_PATH"
 

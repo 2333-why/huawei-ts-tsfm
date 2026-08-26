@@ -278,6 +278,25 @@ def test_legacy_summary_without_launch_gpu_is_incompatible_with_resume(tmp_path)
     assert len(runs) == 128
 
 
+def test_legacy_eight_column_gpu_header_is_incompatible_with_resume(tmp_path):
+    first, record_path, output_root = _run_smoke(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    summary_path = output_root / "smoke_summary.tsv"
+    rows = [line.split("\t") for line in summary_path.read_text().splitlines()]
+    assert rows[0][-1] == "launch_gpu"
+    rows[0][-1] = "gpu"
+    summary_path.write_text(
+        "\n".join("\t".join(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    second, record_path, _ = _run_smoke(tmp_path, resume=True)
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 128
+
+
 def test_resume_preserves_prior_launch_gpu_when_assignment_changes(tmp_path):
     first, record_path, output_root = _run_smoke(tmp_path)
     assert first.returncode == 0, first.stdout + first.stderr
