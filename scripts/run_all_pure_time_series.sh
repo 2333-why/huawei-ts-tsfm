@@ -122,6 +122,7 @@ EXPECTED_TASKS=$task_index
 # when its previous row was PASS for the same setting/dataset/model and all
 # three expected artifacts are non-empty.
 declare -A RESUME_PASS_DIRS=()
+declare -A RESUME_PASS_LAUNCH_GPUS=()
 resume_key() {
     local setting_label="$1"
     local dataset="$2"
@@ -141,13 +142,14 @@ resume_key_from_output_dir() {
 load_resume_summary() {
     [[ "$RESUME" == "1" && -s "$SUMMARY_PATH" ]] || return 0
 
-    local seq_len pred_len dataset model status output_dir exit_code gpu key
-    while IFS=$'\t' read -r seq_len pred_len dataset model status output_dir exit_code gpu; do
+    local seq_len pred_len dataset model status output_dir exit_code launch_gpu key
+    while IFS=$'\t' read -r seq_len pred_len dataset model status output_dir exit_code launch_gpu; do
         # Summaries written before GPU provenance was added are incompatible
         # with resume and must be rerun rather than guessed.
-        [[ "$status" == "PASS" && -n "$output_dir" && -n "$gpu" ]] || continue
+        [[ "$status" == "PASS" && -n "$output_dir" && -n "$launch_gpu" ]] || continue
         key="$(resume_key_from_output_dir "$output_dir")"
         RESUME_PASS_DIRS["$key"]="$output_dir"
+        RESUME_PASS_LAUNCH_GPUS["$key"]="$launch_gpu"
     done < <(tail -n +2 "$SUMMARY_PATH")
 }
 
@@ -183,15 +185,19 @@ run_gpu_queue() {
     local queue_file="$2"
     local result_file="$3"
     local setting_label seq_len pred_len dataset model output_dir log_file exit_code status
+    local key launch_gpu
 
     : >"$result_file"
     while IFS=$'\t' read -r setting_label seq_len pred_len dataset model; do
         output_dir="$OUTPUT_ROOT/$setting_label/$dataset/$model"
         log_file="$output_dir/run.log"
         mkdir -p "$output_dir"
+        launch_gpu="$gpu"
 
         if [[ "$RESUME" == "1" ]] \
             && can_resume "$setting_label" "$dataset" "$model" "$output_dir"; then
+            key="$(resume_key "$setting_label" "$dataset" "$model")"
+            launch_gpu="${RESUME_PASS_LAUNCH_GPUS[$key]}"
             echo "[跳过 GPU $gpu] $setting_label / $dataset / $model"
             exit_code=0
             status="PASS"
@@ -220,7 +226,7 @@ run_gpu_queue() {
 
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$seq_len" "$pred_len" "$dataset" "$model" \
-            "$status" "$output_dir" "$exit_code" "$gpu" \
+            "$status" "$output_dir" "$exit_code" "$launch_gpu" \
             >>"$result_file"
     done <"$queue_file"
 }
@@ -240,7 +246,7 @@ wait "$PID_1" || worker_failed=1
 
 # ==================== 汇总结果 ====================
 {
-    printf 'seq_len\tpred_len\tdataset\tmodel\tstatus\toutput_dir\texit_code\tgpu\n'
+    printf 'seq_len\tpred_len\tdataset\tmodel\tstatus\toutput_dir\texit_code\tlaunch_gpu\n'
     cat "$RESULT_0" "$RESULT_1"
 } >"$SUMMARY_PATH"
 
