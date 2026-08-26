@@ -533,6 +533,90 @@ def test_resume_skips_valid_baseline_completion_artifacts(tmp_path):
     assert {row[7] for row in baseline_rows} == {"cpu"}
 
 
+def test_resume_rejects_baseline_completion_with_zero_test_steps(tmp_path):
+    first, record_path, output_root = _run_smoke(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+    task_dir = _task_output_dir(output_root, (24, 1, "skippd_luoyang", "Persistence"))
+
+    manifest = task_dir / "completion.tsv"
+    rows = [line.split("\t") for line in manifest.read_text(encoding="utf-8").splitlines()]
+    rows[1][13] = "0"
+    manifest.write_text(
+        "\n".join("\t".join(row) for row in rows) + "\n", encoding="utf-8"
+    )
+
+    second, record_path, _ = _run_smoke(
+        tmp_path,
+        resume=True,
+        extra_environment={"GPUS": "2 3"},
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 97
+    assert {
+        (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
+        for event in runs[96:]
+    } == {(24, 1, "skippd_luoyang", "Persistence")}
+
+
+def test_full_resume_skips_valid_baseline_completion_artifacts(tmp_path):
+    first, record_path, output_root = _run_smoke(
+        tmp_path,
+        script_name="scripts/run_all_pure_time_series.sh",
+        extra_environment={"EPOCHS": "40"},
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    task_dir = _task_output_dir(output_root, (24, 1, "skippd_luoyang", "Persistence"))
+    manifest_rows = (task_dir / "completion.tsv").read_text(encoding="utf-8").splitlines()
+    fields = manifest_rows[1].split("\t")
+    assert fields[6:14] == ["full", "0", "0", "0", "0", "0", "0", "1"]
+
+    second, record_path, _ = _run_smoke(
+        tmp_path,
+        resume=True,
+        script_name="scripts/run_all_pure_time_series.sh",
+        extra_environment={"EPOCHS": "40", "GPUS": "2 3"},
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 96
+    assert sum(event["model"] in EXPECTED_BASELINES for event in runs) == 32
+    rows = (output_root / "run_summary.tsv").read_text(encoding="utf-8").splitlines()[1:]
+    assert len(rows) == 96
+    assert {row.split("\t")[7] for row in rows if row.split("\t")[3] in EXPECTED_BASELINES} == {"cpu"}
+
+
+def test_full_resume_retries_invalid_baseline_completion_artifacts(tmp_path):
+    first, record_path, output_root = _run_smoke(
+        tmp_path,
+        script_name="scripts/run_all_pure_time_series.sh",
+        extra_environment={"EPOCHS": "40"},
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    task_dir = _task_output_dir(output_root, (24, 1, "skippd_luoyang", "Persistence"))
+
+    manifest = task_dir / "completion.tsv"
+    rows = [line.split("\t") for line in manifest.read_text(encoding="utf-8").splitlines()]
+    rows[1][13] = "0"
+    manifest.write_text(
+        "\n".join("\t".join(row) for row in rows) + "\n", encoding="utf-8"
+    )
+
+    second, record_path, _ = _run_smoke(
+        tmp_path,
+        resume=True,
+        script_name="scripts/run_all_pure_time_series.sh",
+        extra_environment={"EPOCHS": "40", "GPUS": "2 3"},
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    runs = [event for event in _events(record_path) if event["kind"] == "run"]
+    assert len(runs) == 97
+    assert {
+        (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
+        for event in runs[96:]
+    } == {(24, 1, "skippd_luoyang", "Persistence")}
+
+
 @pytest.mark.parametrize("mutation", [
     "metrics",
     "predictions",
