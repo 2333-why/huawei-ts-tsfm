@@ -464,9 +464,13 @@ def run(args) -> dict:
     args.device = _device_from_arg(args.device)
     config = _read_config(args.config)
     train_dataset, train_loader = _dataset_and_loader(args, "train")
-    val_dataset, val_loader = _dataset_and_loader(args, "val")
+    is_baseline = args.model in BASELINE_NAMES
+    if is_baseline:
+        val_dataset = val_loader = None
+    else:
+        val_dataset, val_loader = _dataset_and_loader(args, "val")
     test_dataset, test_loader = _dataset_and_loader(args, "test")
-    baseline = build_baseline(args.model, train_dataset) if args.model in BASELINE_NAMES else None
+    baseline = build_baseline(args.model, train_dataset) if is_baseline else None
     if baseline is None:
         model, model_config = _build_model(args, train_dataset)
         model.to(args.device)

@@ -133,6 +133,32 @@ def test_persistence_run_skips_neural_construction_and_writes_uniform_artifacts(
     assert fields["test_steps"] == "1"
 
 
+def test_persistence_run_does_not_construct_validation_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    config_path = _write_runner_fixture(tmp_path)
+    output_dir = tmp_path / "output"
+    original_dataset_and_loader = run_time_series._dataset_and_loader
+
+    def guarded_dataset_and_loader(args, flag):
+        if flag == "val":
+            raise AssertionError("baseline run requested validation split")
+        return original_dataset_and_loader(args, flag)
+
+    monkeypatch.setattr(
+        run_time_series, "_dataset_and_loader", guarded_dataset_and_loader,
+    )
+    monkeypatch.setattr(
+        run_time_series,
+        "_build_model",
+        lambda *unused: pytest.fail("baseline run attempted neural model construction"),
+    )
+
+    result = run_time_series.run(_runner_args(config_path, output_dir))
+
+    assert result["payload"]["phase_steps"] == {"train": 0, "val": 0, "test": 1}
+
+
 @pytest.mark.parametrize("name", BASELINE_NAMES)
 def test_baseline_catalog_names_are_distinct_from_neural_catalog(name):
     assert name not in run_time_series.SELECTED_MODEL_NAMES
