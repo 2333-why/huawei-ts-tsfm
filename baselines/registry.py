@@ -11,6 +11,14 @@ from .methods import (
     SeasonalPersistence,
     SmartPersistence,
 )
+from .extended import (
+    ClearSkyAR,
+    ClearSkyEWMA,
+    DriftPersistence,
+    MovingMedian,
+    PersistenceClimatologyBlend,
+    SimilarDay,
+)
 
 
 BASELINE_NAMES: tuple[str, ...] = (
@@ -18,6 +26,12 @@ BASELINE_NAMES: tuple[str, ...] = (
     "SmartPersistence",
     "SeasonalPersistence",
     "Climatology",
+    "MovingMedian",
+    "DriftPersistence",
+    "ClearSkyEWMA",
+    "ClearSkyAR",
+    "SimilarDay",
+    "PersistenceClimatologyBlend",
 )
 
 _BASELINE_CLASSES: dict[str, Type[ForecastBaseline]] = {
@@ -25,6 +39,12 @@ _BASELINE_CLASSES: dict[str, Type[ForecastBaseline]] = {
     "SmartPersistence": SmartPersistence,
     "SeasonalPersistence": SeasonalPersistence,
     "Climatology": Climatology,
+    "MovingMedian": MovingMedian,
+    "DriftPersistence": DriftPersistence,
+    "ClearSkyEWMA": ClearSkyEWMA,
+    "ClearSkyAR": ClearSkyAR,
+    "SimilarDay": SimilarDay,
+    "PersistenceClimatologyBlend": PersistenceClimatologyBlend,
 }
 
 

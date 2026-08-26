@@ -26,9 +26,11 @@
 `TSMixer`、`Pyraformer`、`SegRNN`、`Transformer`、`LightTS`、`Crossformer`、
 `FreTS`、`MICN`。
 
-`run_time_series.py --list-baselines` 返回严格有序的四个经典基线：
+`run_time_series.py --list-baselines` 返回严格有序的十个经典基线：
 
-`Persistence`、`SmartPersistence`、`SeasonalPersistence`、`Climatology`。
+`Persistence`、`SmartPersistence`、`SeasonalPersistence`、`Climatology`、
+`MovingMedian`、`DriftPersistence`、`ClearSkyEWMA`、`ClearSkyAR`、
+`SimilarDay`、`PersistenceClimatologyBlend`。
 
 基线预测都在归一化功率空间工作，`H` 为预测步数，`x` 为当前归一化功率：
 
@@ -36,9 +38,16 @@
 2. `SmartPersistence`：`ŷ(t+h) = x(t) * POA_clear(t+h) / POA_clear(t)`；当前 clear-sky POA 不大于 1 W/m² 时回退为 0。
 3. `SeasonalPersistence`：`ŷ(t+h) = x_obs(t+h - 1 day)`，读取因果可用的观测过去功率；找不到对应历史点时回退为 `x(t)`。
 4. `Climatology`：仅对训练区间内相同 clock time 且日历圆周距离不超过 15 天的观测取均值；无样本时回退为训练均值。
+5. `MovingMedian`：最近一个物理小时内有限历史功率的中位数。
+6. `DriftPersistence`：最近一个物理小时首尾有限观测的线性漂移外推。
+7. `ClearSkyEWMA`：最近晴空指数的 EWMA，半衰期固定为 30 分钟，再乘未来 clear-sky POA。
+8. `ClearSkyAR`：在训练集晴空指数上拟合最高三阶的岭正则 AR，并递推到每个 horizon。
+9. `SimilarDay`：按最近一小时轨迹距离选择训练集中同 clock time 的三个历史日，平均其未来功率轨迹。
+10. `PersistenceClimatologyBlend`：逐 horizon 混合 `SmartPersistence` 和 `Climatology`；权重使用最多 2048 个训练窗口拟合并限制到 `[0, 1]`。
 
-预测值会限制在归一化功率 `[0, 1]`。只有 `Climatology` 的拟合限制在训练区间；
-`SeasonalPersistence` 在预测时读取因果可用的观测过去功率。
+预测值会限制在归一化功率 `[0, 1]`。`Climatology`、`ClearSkyAR`、
+`SimilarDay` 和 `PersistenceClimatologyBlend` 的拟合限制在训练区间；
+`SeasonalPersistence` 在预测时读取因果可用的过去观测功率。
 
 ## 四组设置
 
@@ -75,11 +84,11 @@ cd /opt/data/private/code/pure-ts
   --output_dir results_pure_time_series/seq24_pred1/skippd_luoyang/Persistence
 ```
 
-## 统一 96 任务实验
+## 统一 144 任务实验
 
-四组设置 × 两个数据集 ×（八个神经模型 + 四个基线）共 96 个唯一
+四组设置 × 两个数据集 ×（八个神经模型 + 十个基线）共 144 个唯一
 `(setting, dataset, method)` 任务。其中 64 个神经任务由两条 GPU 队列并行、
-每张卡内部串行，使用配置的两张卡各 32 个任务；32 个基线任务由一条 CPU 队列
+每张卡内部串行，使用配置的两张卡各 32 个任务；80 个基线任务由一条 CPU 队列
 串行执行，summary 的 `launch_gpu` 固定为 `cpu`，进程参数为 `--device cpu`。
 
 ```bash
@@ -89,7 +98,7 @@ GPUS="0 1" EPOCHS=40 RESUME=0 \
   bash scripts/run_all_pure_time_series.sh
 ```
 
-Smoke 脚本使用同一 96 任务矩阵。神经任务的训练、验证、测试阶段各最多一个
+Smoke 脚本使用同一 144 任务矩阵。神经任务的训练、验证、测试阶段各最多一个
 batch；基线不训练且不建立验证阶段，`train_steps=val_steps=0`，测试最多一个
 batch：
 
@@ -101,7 +110,7 @@ GPUS="0 1" \
 ```
 
 完整运行写入 `results_pure_time_series/run_summary.tsv`，Smoke 运行写入
-`results_pure_time_series_smoke/smoke_summary.tsv`；两者都必须包含 96 行且全部为
+`results_pure_time_series_smoke/smoke_summary.tsv`；两者都必须包含 144 行且全部为
 `PASS` 才表示对应运行成功。
 
 ## 输出与恢复

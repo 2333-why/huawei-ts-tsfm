@@ -42,7 +42,12 @@ EXPECTED_MODELS = (
 )
 EXPECTED_BASELINES = (
     "Persistence", "SmartPersistence", "SeasonalPersistence", "Climatology",
+    "MovingMedian", "DriftPersistence", "ClearSkyEWMA", "ClearSkyAR",
+    "SimilarDay", "PersistenceClimatologyBlend",
 )
+EXPECTED_NEURAL_RUNS = len(EXPECTED_TASKS) * len(EXPECTED_MODELS)
+EXPECTED_BASELINE_RUNS = len(EXPECTED_TASKS) * len(EXPECTED_BASELINES)
+EXPECTED_TOTAL_RUNS = EXPECTED_NEURAL_RUNS + EXPECTED_BASELINE_RUNS
 
 
 def _fake_python(tmp_path: Path) -> Path:
@@ -261,7 +266,7 @@ def _task_output_dir(output_root: Path, task=(24, 1, "skippd_luoyang", "TSMixer"
     return output_root / setting / dataset / model
 
 
-def test_smoke_expands_exactly_96_runs_with_gpu_neural_and_cpu_baseline_queues(tmp_path):
+def test_smoke_expands_exactly_144_runs_with_gpu_neural_and_cpu_baseline_queues(tmp_path):
     result, record_path, output_root = _run_smoke(tmp_path)
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -269,11 +274,11 @@ def test_smoke_expands_exactly_96_runs_with_gpu_neural_and_cpu_baseline_queues(t
     assert [event["kind"] for event in events].count("list") == 1
     assert [event["kind"] for event in events].count("list-baselines") == 1
     runs = [event for event in events if event["kind"] == "run"]
-    assert len(runs) == 96
+    assert len(runs) == EXPECTED_TOTAL_RUNS
     neural_runs = [event for event in runs if event["model"] in EXPECTED_MODELS]
     baseline_runs = [event for event in runs if event["model"] in EXPECTED_BASELINES]
-    assert len(neural_runs) == 64
-    assert len(baseline_runs) == 32
+    assert len(neural_runs) == EXPECTED_NEURAL_RUNS
+    assert len(baseline_runs) == EXPECTED_BASELINE_RUNS
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
         for event in neural_runs
@@ -313,8 +318,8 @@ def test_smoke_expands_exactly_96_runs_with_gpu_neural_and_cpu_baseline_queues(t
         event["args"][event["args"].index("--output_dir") + 1]
         for event in runs
     ]
-    assert len(output_dirs) == 96
-    assert len(set(output_dirs)) == 96
+    assert len(output_dirs) == EXPECTED_TOTAL_RUNS
+    assert len(set(output_dirs)) == EXPECTED_TOTAL_RUNS
     assert {
         Path(path).resolve().relative_to(output_root.resolve()).parts[0]
         for path in output_dirs
@@ -353,11 +358,11 @@ def test_smoke_expands_exactly_96_runs_with_gpu_neural_and_cpu_baseline_queues(t
         "seq_len", "pred_len", "dataset", "model", "status", "output_dir",
         "exit_code", "launch_gpu",
     ]
-    assert len(rows[1:]) == 96
+    assert len(rows[1:]) == EXPECTED_TOTAL_RUNS
     assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
-    assert len({tuple(row.split("\t")[:4]) for row in rows[1:]}) == 96
+    assert len({tuple(row.split("\t")[:4]) for row in rows[1:]}) == EXPECTED_TOTAL_RUNS
     assert Counter(row.split("\t")[7] for row in rows[1:]) == Counter(
-        {"0": 32, "1": 32, "cpu": 32}
+        {"0": 32, "1": 32, "cpu": EXPECTED_BASELINE_RUNS}
     )
 
 
@@ -375,7 +380,7 @@ def test_summary_persists_launch_gpu_provenance_matching_cuda_assignment(tmp_pat
         "seq_len", "pred_len", "dataset", "model", "status", "output_dir",
         "exit_code", "launch_gpu",
     ]
-    assert len(rows[1:]) == 96
+    assert len(rows[1:]) == EXPECTED_TOTAL_RUNS
 
     summary_launch_gpu_counts = Counter()
     for row in rows[1:]:
@@ -389,7 +394,9 @@ def test_summary_persists_launch_gpu_provenance_matching_cuda_assignment(tmp_pat
             assert launch_gpu in {"0", "1"}
             assert launch_gpu == runs[task]["cuda_visible_devices"]
         summary_launch_gpu_counts[launch_gpu] += 1
-    assert summary_launch_gpu_counts == Counter({"0": 32, "1": 32, "cpu": 32})
+    assert summary_launch_gpu_counts == Counter(
+        {"0": 32, "1": 32, "cpu": EXPECTED_BASELINE_RUNS}
+    )
 
 
 def test_legacy_summary_without_launch_gpu_is_incompatible_with_resume(tmp_path):
@@ -408,7 +415,7 @@ def test_legacy_summary_without_launch_gpu_is_incompatible_with_resume(tmp_path)
     second, record_path, _ = _run_smoke(tmp_path, resume=True)
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 192
+    assert len(runs) == EXPECTED_TOTAL_RUNS * 2
 
 
 def test_legacy_eight_column_gpu_header_is_incompatible_with_resume(tmp_path):
@@ -427,7 +434,7 @@ def test_legacy_eight_column_gpu_header_is_incompatible_with_resume(tmp_path):
     second, record_path, _ = _run_smoke(tmp_path, resume=True)
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 192
+    assert len(runs) == EXPECTED_TOTAL_RUNS * 2
 
 
 def test_resume_preserves_prior_launch_gpu_when_assignment_changes(tmp_path):
@@ -441,11 +448,11 @@ def test_resume_preserves_prior_launch_gpu_when_assignment_changes(tmp_path):
     )
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 96
+    assert len(runs) == EXPECTED_TOTAL_RUNS
 
     rows = (output_root / "smoke_summary.tsv").read_text().splitlines()[1:]
     assert Counter(row.split("\t")[7] for row in rows) == Counter(
-        {"0": 32, "1": 32, "cpu": 32}
+        {"0": 32, "1": 32, "cpu": EXPECTED_BASELINE_RUNS}
     )
 
 
@@ -503,10 +510,10 @@ def test_resume_rejects_incomplete_or_mismatched_completion_artifacts(tmp_path, 
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
     expected_retries = 2 if mutation == "summary_identity" else 1
-    assert len(runs) == 96 + expected_retries
+    assert len(runs) == EXPECTED_TOTAL_RUNS + expected_retries
     retried_tasks = {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
-        for event in runs[96:]
+        for event in runs[EXPECTED_TOTAL_RUNS:]
     }
     assert (24, 1, "skippd_luoyang", "TSMixer") in retried_tasks
     if mutation == "summary_identity":
@@ -524,12 +531,12 @@ def test_resume_skips_valid_baseline_completion_artifacts(tmp_path):
     )
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 96
-    assert sum(event["model"] in EXPECTED_BASELINES for event in runs) == 32
+    assert len(runs) == EXPECTED_TOTAL_RUNS
+    assert sum(event["model"] in EXPECTED_BASELINES for event in runs) == EXPECTED_BASELINE_RUNS
 
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()[1:]
     baseline_rows = [row.split("\t") for row in rows if row.split("\t")[3] in EXPECTED_BASELINES]
-    assert len(baseline_rows) == 32
+    assert len(baseline_rows) == EXPECTED_BASELINE_RUNS
     assert {row[7] for row in baseline_rows} == {"cpu"}
 
 
@@ -552,10 +559,10 @@ def test_resume_rejects_baseline_completion_with_zero_test_steps(tmp_path):
     )
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 97
+    assert len(runs) == EXPECTED_TOTAL_RUNS + 1
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
-        for event in runs[96:]
+        for event in runs[EXPECTED_TOTAL_RUNS:]
     } == {(24, 1, "skippd_luoyang", "Persistence")}
 
 
@@ -579,10 +586,10 @@ def test_full_resume_skips_valid_baseline_completion_artifacts(tmp_path):
     )
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 96
-    assert sum(event["model"] in EXPECTED_BASELINES for event in runs) == 32
+    assert len(runs) == EXPECTED_TOTAL_RUNS
+    assert sum(event["model"] in EXPECTED_BASELINES for event in runs) == EXPECTED_BASELINE_RUNS
     rows = (output_root / "run_summary.tsv").read_text(encoding="utf-8").splitlines()[1:]
-    assert len(rows) == 96
+    assert len(rows) == EXPECTED_TOTAL_RUNS
     assert {row.split("\t")[7] for row in rows if row.split("\t")[3] in EXPECTED_BASELINES} == {"cpu"}
 
 
@@ -610,10 +617,10 @@ def test_full_resume_retries_invalid_baseline_completion_artifacts(tmp_path):
     )
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 97
+    assert len(runs) == EXPECTED_TOTAL_RUNS + 1
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
-        for event in runs[96:]
+        for event in runs[EXPECTED_TOTAL_RUNS:]
     } == {(24, 1, "skippd_luoyang", "Persistence")}
 
 
@@ -654,10 +661,10 @@ def test_resume_rejects_corrupt_baseline_completion_artifacts(tmp_path, mutation
     )
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 97
+    assert len(runs) == EXPECTED_TOTAL_RUNS + 1
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
-        for event in runs[96:]
+        for event in runs[EXPECTED_TOTAL_RUNS:]
     } == {(24, 1, "skippd_luoyang", "Persistence")}
 
 
@@ -672,7 +679,7 @@ def test_resume_rejects_duplicate_summary_identity(tmp_path):
     second, record_path, _ = _run_smoke(tmp_path, resume=True)
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 97
+    assert len(runs) == EXPECTED_TOTAL_RUNS + 1
 
 
 def test_resume_rejects_completion_from_different_full_epoch_setting(tmp_path):
@@ -691,14 +698,14 @@ def test_resume_rejects_completion_from_different_full_epoch_setting(tmp_path):
     )
     assert second.returncode == 0, second.stdout + second.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 160
+    assert len(runs) == EXPECTED_TOTAL_RUNS + EXPECTED_NEURAL_RUNS
 
 
 def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_path):
     first, record_path, output_root = _run_smoke(tmp_path, fail_model="TSMixer")
     assert first.returncode != 0
     first_runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(first_runs) == 96
+    assert len(first_runs) == EXPECTED_TOTAL_RUNS
     failed_event = next(
         event for event in first_runs
         if (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
@@ -719,8 +726,8 @@ def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_p
     )
     assert second.returncode == 0, second.stdout + second.stderr
     all_runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(all_runs) == 100
-    retried = all_runs[96:]
+    assert len(all_runs) == EXPECTED_TOTAL_RUNS + 4
+    retried = all_runs[EXPECTED_TOTAL_RUNS:]
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
         for event in retried
@@ -732,8 +739,8 @@ def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_p
     }
 
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert len(rows[1:]) == 96
-    assert len({tuple(row.split("\t")[:4]) for row in rows[1:]}) == 96
+    assert len(rows[1:]) == EXPECTED_TOTAL_RUNS
+    assert len({tuple(row.split("\t")[:4]) for row in rows[1:]}) == EXPECTED_TOTAL_RUNS
     assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
 
     summary_gpu = {}
@@ -757,7 +764,7 @@ def test_smoke_resume_retries_only_failed_combination_and_rewrites_summary(tmp_p
         assert summary_gpu[task] == expected_gpu
 
 
-def test_full_runner_uses_same_96_tasks_without_smoke_flag(tmp_path):
+def test_full_runner_uses_same_144_tasks_without_smoke_flag(tmp_path):
     result, record_path, output_root = _run_smoke(
         tmp_path,
         script_name="scripts/run_all_pure_time_series.sh",
@@ -765,7 +772,7 @@ def test_full_runner_uses_same_96_tasks_without_smoke_flag(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     runs = [event for event in _events(record_path) if event["kind"] == "run"]
-    assert len(runs) == 96
+    assert len(runs) == EXPECTED_TOTAL_RUNS
     assert {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"])
         for event in runs
@@ -788,7 +795,7 @@ def test_full_runner_uses_same_96_tasks_without_smoke_flag(tmp_path):
         for event in runs
     )
     rows = (output_root / "run_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert len(rows[1:]) == 96
+    assert len(rows[1:]) == EXPECTED_TOTAL_RUNS
     assert all(row.split("\t")[4] == "PASS" for row in rows[1:])
 
 
@@ -825,7 +832,7 @@ def test_full_runner_fails_if_a_gpu_worker_stops_early(tmp_path):
 
     assert result.returncode != 0
     rows = (output_root / "run_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert len(rows[1:]) < 96
+    assert len(rows[1:]) < EXPECTED_TOTAL_RUNS
 
 
 @pytest.mark.parametrize("script_name", [

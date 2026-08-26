@@ -246,6 +246,37 @@ class Climatology(ForecastBaseline):
         self.profile_minute = profile["minute_of_day"].to_numpy(dtype=np.int64)
         self.profile_sum = profile["sum"].to_numpy(dtype=np.float64)
         self.profile_count = profile["count"].to_numpy(dtype=np.int64)
+        self._build_lookup()
+
+    def _build_lookup(self) -> None:
+        """Precompute circular-window means for constant-time prediction."""
+
+        lookup = np.full((366, 1440), np.nan, dtype=np.float64)
+        kernel = np.ones(2 * self.window_days + 1, dtype=np.float64)
+        for minute in np.unique(self.profile_minute):
+            same_minute = self.profile_minute == minute
+            sums = np.zeros(365, dtype=np.float64)
+            counts = np.zeros(365, dtype=np.float64)
+            days = self.profile_day[same_minute] - 1
+            sums[days] = self.profile_sum[same_minute]
+            counts[days] = self.profile_count[same_minute]
+            if self.window_days:
+                padded_sums = np.concatenate(
+                    [sums[-self.window_days :], sums, sums[: self.window_days]]
+                )
+                padded_counts = np.concatenate(
+                    [counts[-self.window_days :], counts, counts[: self.window_days]]
+                )
+                sums = np.convolve(padded_sums, kernel, mode="valid")
+                counts = np.convolve(padded_counts, kernel, mode="valid")
+            means = np.divide(
+                sums,
+                counts,
+                out=np.full(365, np.nan, dtype=np.float64),
+                where=counts > 0,
+            )
+            lookup[1:, minute] = means
+        self._lookup = lookup
 
     @classmethod
     def from_checkpoint_payload(cls, payload: dict) -> "Climatology":
@@ -288,6 +319,7 @@ class Climatology(ForecastBaseline):
         instance.profile_minute = profile_minute
         instance.profile_sum = profile_sum
         instance.profile_count = profile_count
+        instance._build_lookup()
         return instance
 
     def predict(self, history: torch.Tensor, issue_time_ns: Any, dataset: Any) -> torch.Tensor:
@@ -301,18 +333,8 @@ class Climatology(ForecastBaseline):
             target_times.hour.to_numpy(dtype=np.int64) * 60
             + target_times.minute.to_numpy(dtype=np.int64)
         )
-        values = np.full(len(target_times), self.training_mean, dtype=np.float64)
-        for index, (day, minute) in enumerate(zip(target_day, target_minute)):
-            same_clock = self.profile_minute == minute
-            distance = np.abs(self.profile_day - day)
-            circular_distance = np.minimum(distance, 365 - distance)
-            selected = same_clock & (circular_distance <= self.window_days)
-            if selected.any():
-                total_count = self.profile_count[selected].sum()
-                if total_count:
-                    values[index] = float(
-                        self.profile_sum[selected].sum() / total_count
-                    )
+        values = self._lookup[target_day, target_minute]
+        values = np.where(np.isfinite(values), values, self.training_mean)
         return _finish_prediction(values.reshape(len(issue_ns), pred_len, 1), history)
 
     def checkpoint_payload(self) -> dict:

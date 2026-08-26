@@ -84,6 +84,12 @@ def test_baseline_catalog_is_exact_and_ordered():
         "SmartPersistence",
         "SeasonalPersistence",
         "Climatology",
+        "MovingMedian",
+        "DriftPersistence",
+        "ClearSkyEWMA",
+        "ClearSkyAR",
+        "SimilarDay",
+        "PersistenceClimatologyBlend",
     )
     assert tuple(load_baseline_class(name).__name__ for name in BASELINE_NAMES) == BASELINE_NAMES
 

@@ -28,6 +28,8 @@ EXPECTED_MODELS=(
 )
 EXPECTED_BASELINES=(
     "Persistence" "SmartPersistence" "SeasonalPersistence" "Climatology"
+    "MovingMedian" "DriftPersistence" "ClearSkyEWMA" "ClearSkyAR"
+    "SimilarDay" "PersistenceClimatologyBlend"
 )
 
 # The horizon is either one output point or four physical hours. The latter

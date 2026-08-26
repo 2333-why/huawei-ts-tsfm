@@ -25,18 +25,27 @@
 `TSMixer`、`Pyraformer`、`SegRNN`、`Transformer`、`LightTS`、`Crossformer`、
 `FreTS`、`MICN`。
 
-`run_time_series.py --list-baselines` 严格返回四个经典基线：
+`run_time_series.py --list-baselines` 严格返回十个经典基线：
 
-`Persistence`、`SmartPersistence`、`SeasonalPersistence`、`Climatology`。
+`Persistence`、`SmartPersistence`、`SeasonalPersistence`、`Climatology`、
+`MovingMedian`、`DriftPersistence`、`ClearSkyEWMA`、`ClearSkyAR`、
+`SimilarDay`、`PersistenceClimatologyBlend`。
 
-四个基线的公式（`H` 为预测步数，`x` 为归一化功率）如下：
+十个基线的定义（`H` 为预测步数，`x` 为归一化功率）如下：
 
 1. `Persistence`：`ŷ(t+h) = x(t)`，`h = 1..H`。
 2. `SmartPersistence`：`ŷ(t+h) = x(t) * POA_clear(t+h) / POA_clear(t)`；当当前 clear-sky POA 不大于 1 W/m² 时回退为 0。
 3. `SeasonalPersistence`：`ŷ(t+h) = x_obs(t+h-1 day)`，读取因果可用的观测过去功率；缺少对应历史点时回退为 `x(t)`。
 4. `Climatology`：仅对训练区间内相同 clock time 且日历圆周距离不超过 15 天的观测取均值；无样本时回退为训练均值。
+5. `MovingMedian`：取最近一个物理小时内有限历史功率的中位数，并重复到全部 horizon。
+6. `DriftPersistence`：用最近一个物理小时首尾有限观测的线性斜率外推。
+7. `ClearSkyEWMA`：对最近晴空指数做半衰期 30 分钟的指数加权平均，再乘未来 clear-sky POA。
+8. `ClearSkyAR`：在训练集晴空指数上拟合最高三阶的岭正则 AR，并在晴空指数空间递推。
+9. `SimilarDay`：以最近一小时轨迹为距离，在训练集中选择同一 clock time 的三个最近历史日并平均其未来轨迹。
+10. `PersistenceClimatologyBlend`：按 horizon 混合 `SmartPersistence` 和 `Climatology`，权重只用最多 2048 个训练窗口拟合并限制在 `[0, 1]`。
 
-只有 `Climatology` 的拟合限制在训练区间；`SeasonalPersistence` 在预测时读取因果可用的观测过去功率。
+`Climatology`、`ClearSkyAR`、`SimilarDay` 和 `PersistenceClimatologyBlend` 的拟合
+严格限制在训练区间；`SeasonalPersistence` 在预测时读取因果可用的过去观测功率。
 
 ## 训练设置与单次运行
 
@@ -64,10 +73,10 @@ cd /opt/data/private/code/pure-ts
   --output_dir results_pure_time_series/seq24_pred1/skippd_luoyang/Persistence
 ```
 
-## 统一 96 任务实验
+## 统一 144 任务实验
 
-四组设置 × 两个数据集 ×（八个神经模型 + 四个基线）共 96 个唯一任务：64
-个神经任务由两条 GPU 队列并行运行，每张卡内部串行并各承担 32 个；32 个
+四组设置 × 两个数据集 ×（八个神经模型 + 十个基线）共 144 个唯一任务：64
+个神经任务由两条 GPU 队列并行运行，每张卡内部串行并各承担 32 个；80 个
 基线任务在一条 CPU 队列串行运行，使用 `launch_gpu=cpu` 和 `--device cpu`。
 
 ```bash
@@ -102,7 +111,7 @@ GPUS="0 1" \
 
 `RESUME=1` 仅复用 summary 身份、规范输出目录、运行限制、完成清单和
 `best.pt`、`predictions.csv`、`metrics.json` 三个 SHA-256 均完全匹配的成功产物。
-神经任务必须有正的训练/验证/测试步数；只有四个已注册基线允许训练/验证步数
+神经任务必须有正的训练/验证/测试步数；只有十个已注册基线允许训练/验证步数
 为 0。损坏、截断、篡改、重复、失败或方法身份不匹配的任务都会重跑。
 
 详细说明见 [PURE_TIME_SERIES.md](PURE_TIME_SERIES.md)。
