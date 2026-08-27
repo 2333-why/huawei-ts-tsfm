@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
-import warnings
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -101,6 +101,19 @@ def _install_happy_fakes(monkeypatch, module, tmp_path, *, cache_complete=True):
         },
     )
     return imports["torch"]
+
+
+def _install_transformers_hub_fake(monkeypatch, cache_value):
+    transformers = types.ModuleType("transformers")
+    utils = types.ModuleType("transformers.utils")
+    hub = types.ModuleType("transformers.utils.hub")
+    hub.TRANSFORMERS_CACHE = cache_value
+    transformers.utils = utils
+    utils.hub = hub
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "transformers.utils", utils)
+    monkeypatch.setitem(sys.modules, "transformers.utils.hub", hub)
+    return hub
 
 
 def test_complete_reference_environment_is_ok_and_skips_network(
@@ -321,6 +334,94 @@ def test_prerelease_and_dev_versions_do_not_satisfy_pinned_ranges(
     assert report["ok"] is False
 
 
+@pytest.mark.parametrize(
+    ("package_name", "version", "expected_status"),
+    [
+        ("transformers", "4.46.1", "fail"),
+        ("transformers", "4.46.2", "pass"),
+        ("transformers", "4.47.0", "fail"),
+        ("peft", "0.13.1", "fail"),
+        ("peft", "0.13.2", "pass"),
+        ("peft", "0.14.0", "fail"),
+    ],
+)
+def test_dependency_patch_boundaries_match_the_supported_contract(
+    environment_module, monkeypatch, tmp_path, package_name, version, expected_status
+):
+    module = environment_module
+    _install_happy_fakes(monkeypatch, module, tmp_path)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.8.18")
+    monkeypatch.setattr(module.sys, "executable", "/opt/data/private/penv/time/bin/python")
+    versions = {
+        "torch": "2.3.1+cu118",
+        "transformers": "4.46.2",
+        "peft": "0.13.2",
+    }
+    versions[package_name] = version
+    monkeypatch.setattr(module, "_package_version", lambda name: versions[name])
+
+    report = module.collect_environment()
+
+    item = next(item for item in report["packages"] if item["name"] == package_name)
+    assert item["version"] == version
+    assert item["status"] == expected_status
+
+
+@pytest.mark.parametrize(
+    ("package_name", "version", "expected_status"),
+    [
+        ("torch", "0!2.3.1", "pass"),
+        ("torch", "2.3.1.0", "pass"),
+        ("torch", "2.3.1+cu118", "pass"),
+        ("torch", "2.3.not-a-version", "fail"),
+    ],
+)
+def test_dependency_versions_use_pep440_release_comparison(
+    environment_module, monkeypatch, tmp_path, package_name, version, expected_status
+):
+    module = environment_module
+    _install_happy_fakes(monkeypatch, module, tmp_path)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.8.18")
+    monkeypatch.setattr(module.sys, "executable", "/opt/data/private/penv/time/bin/python")
+    versions = {
+        "torch": "2.3.1+cu118",
+        "transformers": "4.46.2",
+        "peft": "0.13.2",
+    }
+    versions[package_name] = version
+    monkeypatch.setattr(module, "_package_version", lambda name: versions[name])
+
+    report = module.collect_environment()
+
+    item = next(item for item in report["packages"] if item["name"] == package_name)
+    assert item["version"] == version
+    assert item["status"] == expected_status
+
+
+def test_missing_packaging_dependency_is_a_failed_version_check(
+    environment_module, monkeypatch, tmp_path
+):
+    module = environment_module
+    _install_happy_fakes(monkeypatch, module, tmp_path)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.8.18")
+    monkeypatch.setattr(module.sys, "executable", "/opt/data/private/penv/time/bin/python")
+    original_import = module.importlib.import_module
+
+    def missing_packaging(name):
+        if name.startswith("packaging."):
+            raise ImportError(SENTINEL)
+        return original_import(name)
+
+    monkeypatch.setattr(module.importlib, "import_module", missing_packaging)
+
+    report = module.collect_environment()
+
+    torch_item = next(item for item in report["packages"] if item["name"] == "torch")
+    assert torch_item["version_status"] == "fail"
+    assert torch_item["status"] == "fail"
+    assert SENTINEL not in module.render_text(report)
+
+
 def test_torch_cuda_build_mismatch_is_a_package_failure(
     environment_module, monkeypatch, tmp_path
 ):
@@ -489,11 +590,7 @@ def test_cache_root_matches_transformers_precedence(
     monkeypatch.setenv("TRANSFORMERS_CACHE", str(transformers_cache))
     monkeypatch.setenv("HF_HUB_CACHE", str(hub_cache))
     monkeypatch.setenv("HF_HOME", str(hf_home))
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        import transformers.utils.hub as transformers_hub
-
-    monkeypatch.setattr(transformers_hub, "TRANSFORMERS_CACHE", str(transformers_cache))
+    _install_transformers_hub_fake(monkeypatch, str(transformers_cache))
 
     assert module._effective_cache_root() == transformers_cache
 
@@ -516,14 +613,7 @@ def test_cache_root_uses_transformers_effective_legacy_precedence(
     monkeypatch.setenv("PYTORCH_TRANSFORMERS_CACHE", str(legacy_transformers_cache))
     monkeypatch.setenv("PYTORCH_PRETRAINED_BERT_CACHE", str(legacy_pretrained_cache))
     monkeypatch.setenv("HF_HUB_CACHE", str(hub_cache))
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        import transformers.utils.hub as transformers_hub
-
-    monkeypatch.setattr(
-        transformers_hub, "TRANSFORMERS_CACHE", str(legacy_transformers_cache)
-    )
+    _install_transformers_hub_fake(monkeypatch, str(legacy_transformers_cache))
 
     assert module._effective_cache_root() == legacy_transformers_cache
 
@@ -540,7 +630,8 @@ def test_cache_root_fallback_keeps_legacy_precedence_when_transformers_import_fa
     monkeypatch.setenv("PYTORCH_TRANSFORMERS_CACHE", str(legacy_transformers_cache))
     monkeypatch.setenv("PYTORCH_PRETRAINED_BERT_CACHE", str(legacy_pretrained_cache))
     monkeypatch.setenv("HF_HUB_CACHE", str(hub_cache))
-    monkeypatch.setitem(sys.modules, "transformers.utils.hub", None)
+    for name in ("transformers", "transformers.utils", "transformers.utils.hub"):
+        monkeypatch.setitem(sys.modules, name, None)
 
     assert module._effective_cache_root() == legacy_transformers_cache
 

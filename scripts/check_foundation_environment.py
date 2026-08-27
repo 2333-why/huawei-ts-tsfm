@@ -35,10 +35,10 @@ EXPECTED_INTERPRETER = "/opt/data/private/penv/time/bin/python"
 EXPECTED_PYTHON = "3.8.18"
 MAX_NETWORK_TIMEOUT = 10.0
 
-PACKAGE_SPECS: Tuple[Tuple[str, str, str, Tuple[int, int], Tuple[int, int]], ...] = (
-    ("torch", "torch", ">=2.3,<2.4", (2, 3), (2, 4)),
-    ("transformers", "transformers", ">=4.46,<4.47", (4, 46), (4, 47)),
-    ("peft", "peft", ">=0.13,<0.14", (0, 13), (0, 14)),
+PACKAGE_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("torch", "torch", ">=2.3,<2.4"),
+    ("transformers", "transformers", ">=4.46.2,<4.47"),
+    ("peft", "peft", ">=0.13.2,<0.14"),
 )
 
 _DATASET_CONFIGS: Tuple[Tuple[str, Path], ...] = (
@@ -89,26 +89,28 @@ def _import_package(module_name: str) -> Any:
     return importlib.import_module(module_name)
 
 
-def _version_tuple(value: Any) -> Optional[Tuple[int, int, int]]:
-    text = str(value)
-    # The acceptance ranges are for released package versions.  A local build
-    # suffix (Torch's ``+cu118``) is safe to ignore, and a post-release remains
-    # in the same range; prerelease/dev suffixes must not pass a prefix parser.
-    match = re.fullmatch(
-        r"(\d+)\.(\d+)(?:\.(\d+))?(?:\.post\d+)?(?:\+[0-9A-Za-z._-]+)?",
-        text,
-    )
-    if match is None:
-        return None
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
+def _version_satisfies(value: Any, specifier: str) -> bool:
+    """Evaluate a released package version against a PEP 440 specifier."""
+
+    try:
+        version_module = importlib.import_module("packaging.version")
+        specifier_module = importlib.import_module("packaging.specifiers")
+        version_type = getattr(version_module, "Version")
+        specifier_type = getattr(specifier_module, "SpecifierSet")
+        parsed = version_type(str(value))
+        if parsed.is_prerelease or parsed.is_devrelease:
+            return False
+        return bool(specifier_type(specifier).contains(parsed, prereleases=False))
+    except Exception:
+        # A missing or unusable packaging installation is a failed check, not
+        # an import-time failure or an exception disclosure in the report.
+        return False
 
 
 def _package_report(
     display_name: str,
     distribution_name: str,
     expected: str,
-    lower: Tuple[int, int],
-    upper: Tuple[int, int],
 ) -> Tuple[Dict[str, Any], Optional[Any]]:
     item: Dict[str, Any] = {
         "name": display_name,
@@ -139,8 +141,7 @@ def _package_report(
         item["import_status"] = "fail"
         item["status"] = "fail"
 
-    parsed = _version_tuple(version) if version is not None else None
-    if parsed is None or not (parsed >= (lower[0], lower[1], 0) and parsed < (upper[0], upper[1], 0)):
+    if version is None or not _version_satisfies(version, expected):
         item["version_status"] = "fail"
         item["status"] = "fail"
 
@@ -635,10 +636,8 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
     interpreter = _interpreter_report()
     packages: List[Dict[str, Any]] = []
     imported: Dict[str, Any] = {}
-    for display_name, distribution_name, expected, lower, upper in PACKAGE_SPECS:
-        item, package = _package_report(
-            display_name, distribution_name, expected, lower, upper
-        )
+    for display_name, distribution_name, expected in PACKAGE_SPECS:
+        item, package = _package_report(display_name, distribution_name, expected)
         packages.append(item)
         imported[display_name] = package
 

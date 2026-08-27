@@ -43,8 +43,8 @@ Python 3.8.18
 | 组件 | 验收范围 |
 | --- | --- |
 | PyTorch distribution/import | `>=2.3,<2.4`，CUDA build 必须为 `11.8` |
-| Transformers | `>=4.46,<4.47` |
-| PEFT | `>=0.13,<0.14` |
+| Transformers | `>=4.46.2,<4.47` |
+| PEFT | `>=0.13.2,<0.14` |
 | CUDA | `torch.cuda.is_available()` 为真，至少 2 张卡；每张卡名称非空、总显存字节数为正 |
 
 注意：仓库现有 `requirements.txt` 的 `torch>=2.0` 只是历史项目的宽松下限，
@@ -56,7 +56,7 @@ Python 3.8.18
   --index-url https://download.pytorch.org/whl/cu118 \
   "torch>=2.3,<2.4"
 /opt/data/private/penv/time/bin/python -m pip install \
-  "transformers>=4.46,<4.47" "peft>=0.13,<0.14"
+  "transformers>=4.46.2,<4.47" "peft>=0.13.2,<0.14"
 /opt/data/private/penv/time/bin/python scripts/check_foundation_environment.py \
   --offline --json
 ```
@@ -362,13 +362,13 @@ OUTPUT_ROOT=results_foundation_models \
 
 ```text
 /opt/data/private/penv/time/bin/python -m pytest -q tests/test_foundation_environment.py
-47 passed in 1.41s
+58 passed in 0.25s
 
 /opt/data/private/penv/time/bin/python -m pytest -q tests/test_foundation_scripts.py::test_two_gpu_smoke_expands_32_tasks_with_serial_queues_and_contained_outputs
 1 passed in 3.05s; fake runner: 32/32 PASS
 
 /opt/data/private/penv/time/bin/python -m pytest -q
-395 passed in 424.20s (0:07:04)
+406 passed in 424.20s (0:07:04)
 
 /opt/data/private/penv/time/bin/python scripts/check_foundation_environment.py --network-timeout 3
 exit=1; status=FAIL
@@ -384,8 +384,8 @@ exit=1; ok=false; Sundial.network_status=offline; TimeMoE.network_status=offline
 
 预检还确认了解释器、三个包（Torch CUDA build 11.8）、两张 GPU 和两个配置后的
 Parquet 文件；它没有加载真实权重。由于两个 exact cache 都缺失且在线 source 只得到
-sanitized `connection_error`，本环境没有 real model load、predict/forward、backward 或
-real 32-task smoke 证据，也没有下载权重。
+sanitized `timeout`/`connection_error` reachability failures，本环境没有 real model
+load、predict/forward、backward 或 real 32-task smoke 证据，也没有下载权重。
 
 ## 9. 已知限制
 

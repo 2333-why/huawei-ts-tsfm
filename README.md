@@ -30,7 +30,7 @@ Torch、Transformers 和 PEFT；不要把旧 8/10 方法的依赖通过率当作
   --index-url https://download.pytorch.org/whl/cu118 \
   "torch>=2.3,<2.4"
 /opt/data/private/penv/time/bin/python -m pip install \
-  "transformers>=4.46,<4.47" "peft>=0.13,<0.14"
+  "transformers>=4.46.2,<4.47" "peft>=0.13.2,<0.14"
 /opt/data/private/penv/time/bin/python scripts/check_foundation_environment.py \
   --offline --json
 ```
