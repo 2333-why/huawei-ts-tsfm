@@ -4,13 +4,48 @@
 进行预测，不向神经网络提供图像、天气、未来目标或其他模态。经典方法可以额外
 使用配置文件中的站点静态信息，以及由预测发布时间推导出的日历和太阳位置。
 
-仓库包含两类方法：
+仓库包含三类方法：
 
 - 8 个纯时序神经网络模型，需要训练，推荐使用 GPU。
 - 10 个经典预测方法，不进行梯度训练，统一在 CPU 上拟合或评估。
+- 2 个独立的时序基础模型（`Sundial`、`TimeMoE`），各支持
+  `zero_shot`、`adapter`、`full`、`last_layer` 四种模式。
 
 正式批量训练入口为 `scripts/run_all_pure_time_series.sh`，快速验收入口为
 `scripts/smoke_all_pure_time_series.sh`，单模型入口为 `run_time_series.py`。
+
+基础模型使用独立入口 `run_foundation_model.py`，不加入原有纯时序 144 项矩阵。
+安装 `requirements.txt` 后，还需单独确认 bounded Transformers/PEFT 依赖、两张
+GPU 和精确模型 cache；旧的 8/10 方法测试通过不代表基础模型可加载。完整的模型
+revision、四种模式、32 项矩阵、恢复协议、真实 smoke 要求和当前阻塞状态见
+[FOUNDATION_MODELS.md](FOUNDATION_MODELS.md)。
+
+注意：`requirements.txt` 中历史兼容的 `torch>=2.0` 不等于基础模型验收要求的
+`torch>=2.3,<2.4`、CUDA 11.8。请按指南在独立环境中单独 provision/检查 pinned
+Torch、Transformers 和 PEFT；不要把旧 8/10 方法的依赖通过率当作 foundation 运行
+证据：
+
+```bash
+/opt/data/private/penv/time/bin/python -m pip install \
+  --index-url https://download.pytorch.org/whl/cu118 \
+  "torch>=2.3,<2.4"
+/opt/data/private/penv/time/bin/python -m pip install \
+  "transformers>=4.46,<4.47" "peft>=0.13,<0.14"
+/opt/data/private/penv/time/bin/python scripts/check_foundation_environment.py \
+  --offline --json
+```
+
+```bash
+/opt/data/private/penv/time/bin/python \
+  scripts/check_foundation_environment.py
+/opt/data/private/penv/time/bin/python run_foundation_model.py --list-models
+/opt/data/private/penv/time/bin/python run_foundation_model.py --list-modes
+
+PYTHON=/opt/data/private/penv/time/bin/python \
+GPUS="0 1" \
+OUTPUT_ROOT=results_foundation_models_smoke \
+  bash scripts/smoke_all_foundation_models_2gpu.sh
+```
 
 ## 1. 接收代码后的检查顺序
 
