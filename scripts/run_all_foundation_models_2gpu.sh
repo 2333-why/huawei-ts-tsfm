@@ -43,18 +43,22 @@ if [[ ! -f "$ROOT_DIR/run_foundation_model.py" ]]; then
 fi
 
 if [[ "$GPUS" == *$'\n'* || "$GPUS" == *$'\t'* ]]; then
-    echo "GPUS must contain exactly two non-whitespace tokens" >&2
+    echo "GPUS must contain exactly two canonical distinct physical GPU ordinals (for example: GPUS='0 1')" >&2
     exit 2
 fi
 read -r -a GPU_IDS <<<"$GPUS"
 if (( ${#GPU_IDS[@]} != 2 )); then
-    echo "GPUS must contain exactly two distinct GPU tokens, for example: GPUS='0 1'" >&2
+    echo "GPUS must contain exactly two canonical distinct physical GPU ordinals (for example: GPUS='0 1')" >&2
     exit 2
 fi
-if [[ -z "${GPU_IDS[0]}" || -z "${GPU_IDS[1]}" \
-    || "${GPU_IDS[0]}" =~ [[:space:]] || "${GPU_IDS[1]}" =~ [[:space:]] \
-    || "${GPU_IDS[0]}" == "${GPU_IDS[1]}" ]]; then
-    echo "GPUS must contain exactly two distinct GPU tokens" >&2
+for gpu_id in "${GPU_IDS[@]}"; do
+    if ! [[ "$gpu_id" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "GPUS must contain exactly two canonical distinct physical GPU ordinals (for example: GPUS='0 1')" >&2
+        exit 2
+    fi
+done
+if [[ "${GPU_IDS[0]}" == "${GPU_IDS[1]}" ]]; then
+    echo "GPUS must contain exactly two canonical distinct physical GPU ordinals (for example: GPUS='0 1')" >&2
     exit 2
 fi
 

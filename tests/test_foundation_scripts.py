@@ -287,6 +287,20 @@ def test_two_gpu_smoke_expands_32_tasks_with_serial_queues_and_contained_outputs
     assert all(row.split("\t")[5] == "PASS" for row in rows[1:])
 
 
+@pytest.mark.parametrize("gpus", ["0,1 0", "00 0", "0 00", "-1 0", "0 gpu", "0 GPU-12345678"])
+def test_invalid_gpu_tokens_fail_before_any_fake_worker_run(tmp_path, gpus):
+    repo, env, output_root, record = _harness(tmp_path)
+    env["GPUS"] = gpus
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "canonical distinct physical GPU ordinals" in result.stderr
+    assert not record.exists() or not [event for event in _events(record) if event["kind"] == "run"]
+    assert not (output_root / "smoke_summary.tsv").exists()
+
+
 def test_in_root_output_symlink_aliases_are_rejected_before_workers_start(tmp_path):
     repo, env, output_root, record = _harness(tmp_path)
     alias_parent = output_root / "seq48_pred1" / "skippd_luoyang" / "Sundial"
