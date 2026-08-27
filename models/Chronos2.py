@@ -144,7 +144,8 @@ class Chronos2Backend:
                 if not callable(predict):
                     raise ValueError("Chronos2 pipeline has no point prediction method")
                 output = predict(context, prediction_length=pred_len)
-        return _point_tensor(output, batch=int(history.shape[0]), pred_len=pred_len)
+        forecast = _point_tensor(output, batch=int(history.shape[0]), pred_len=pred_len)
+        return forecast.to(device=history.device)
 
     def training_loss(
         self,

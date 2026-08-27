@@ -117,7 +117,8 @@ class TiRexBackend:
                 context=context,
                 prediction_length=pred_len,
             )
-        return _mean_tensor(output, batch=int(history.shape[0]), pred_len=pred_len)
+        forecast = _mean_tensor(output, batch=int(history.shape[0]), pred_len=pred_len)
+        return forecast.to(device=history.device)
 
     def training_loss(self, history: Any, target: Any, target_mask: Any) -> torch.Tensor:
         raise ValueError("TiRex is zero-shot only and does not support training_loss")

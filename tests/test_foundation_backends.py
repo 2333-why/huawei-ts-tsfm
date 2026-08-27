@@ -675,3 +675,376 @@ def test_timesfm_loader_crops_mean_predictions_and_computes_masked_mse(monkeypat
     expected = ((torch.tensor([3.0, 3.0]) - torch.tensor([1.0, 9.0])) ** 2).mean()
     assert torch.allclose(loss.detach(), expected)
     assert loss.ndim == 0 and loss.requires_grad and torch.isfinite(loss)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_chronos2_moves_cpu_pipeline_forecast_to_backend_cuda_device(monkeypatch):
+    _install_fake_chronos(monkeypatch)
+    from models.Chronos2 import Chronos2Backend
+    from models.registry import get_model_spec
+
+    spec = get_model_spec("Chronos2")
+    backend = Chronos2Backend(spec=spec, device="cuda:0")
+    forecast = backend.predict(torch.tensor([[[1.0], [2.0], [3.0]]]), 2)
+
+    assert forecast.device == torch.device("cuda:0")
+    assert forecast.shape == (1, 2, 1)
+    assert torch.isfinite(forecast).all()
+    assert torch.equal(forecast.cpu(), torch.tensor([[[10.0], [11.0]]]))
+
+
+def test_tirex_moves_cpu_forecast_to_backend_cuda_device(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    loaded, _ = _install_fake_tirex(monkeypatch)
+    from models.TiRex import TiRexBackend
+    from models.registry import get_model_spec
+
+    spec = get_model_spec("TiRex")
+    backend = TiRexBackend(spec=spec, device="cuda:0")
+    forecast = backend.predict(torch.tensor([[[3.0], [4.0], [5.0]]]), 2)
+
+    assert loaded.calls[0]["context"].device == torch.device("cuda:0")
+    assert forecast.device == torch.device("cuda:0")
+    assert forecast.shape == (1, 2, 1)
+    assert torch.isfinite(forecast).all()
+    assert torch.equal(forecast.cpu(), torch.tensor([[[0.0], [1.0]]]))
+
+
+def _assert_backend_optimizer_step_is_audited(backend, model, mode, loss_inputs):
+    from models.trainability import LoraSettings
+
+    report = backend.configure_trainable(
+        mode,
+        LoraSettings(r=2, lora_alpha=4, lora_dropout=0.0)
+        if mode == "adapter"
+        else None,
+    )
+    before = {
+        name: value.detach().clone() for name, value in model.state_dict().items()
+    }
+    allowed = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert report.trainable_parameters == sum(
+        parameter.numel()
+        for name, parameter in model.named_parameters()
+        if name in allowed
+    )
+    if mode == "adapter":
+        assert allowed
+        assert all("lora_" in name for name in allowed)
+    elif mode == "last_layer":
+        assert allowed
+        assert all(
+            name.startswith("output_patch_embedding.")
+            or name.startswith("output_projection_point.")
+            for name in allowed
+        )
+    else:
+        assert allowed == set(name for name, _ in model.named_parameters())
+
+    optimizer = torch.optim.SGD(
+        [parameter for parameter in model.parameters() if parameter.requires_grad],
+        lr=0.2,
+    )
+    loss = backend.training_loss(*loss_inputs)
+    loss.backward()
+    if mode == "adapter":
+        assert any(
+            parameter.grad is not None and bool(torch.any(parameter.grad != 0))
+            for name, parameter in model.named_parameters()
+            if "lora_" in name
+        )
+    optimizer.step()
+
+    changed = {
+        name
+        for name, value in model.state_dict().items()
+        if not torch.equal(value, before[name])
+    }
+    assert changed
+    assert changed <= allowed
+    assert all(
+        name in allowed or torch.equal(value, before[name])
+        for name, value in model.state_dict().items()
+    )
+
+
+class _BackendOptimizerChronosModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.self_attention = nn.Module()
+        self.self_attention.q = nn.Linear(1, 1)
+        self.self_attention.v = nn.Linear(1, 1)
+        self.self_attention.k = nn.Linear(1, 1)
+        self.self_attention.o = nn.Linear(1, 1)
+        self.output_patch_embedding = nn.Module()
+        self.output_patch_embedding.output_layer = nn.Linear(1, 1)
+        self.unrelated = nn.Linear(1, 1)
+        self.chronos_config = types.SimpleNamespace(
+            output_patch_size=1,
+            max_output_patches=16,
+        )
+
+    def forward(self, *, context, future_target, future_target_mask, num_output_patches):
+        hidden = context.unsqueeze(-1)
+        hidden = torch.tanh(self.self_attention.q(hidden))
+        hidden = torch.tanh(self.self_attention.v(hidden))
+        hidden = torch.tanh(self.self_attention.k(hidden))
+        hidden = torch.tanh(self.self_attention.o(hidden))
+        point = self.output_patch_embedding.output_layer(hidden[:, -1, :])
+        point = point.expand(-1, future_target.shape[1])
+        residual = (point - future_target) * future_target_mask.to(point.dtype)
+        return types.SimpleNamespace(loss=residual.square().sum())
+
+
+class _BackendOptimizerChronosPipeline:
+    @classmethod
+    def from_pretrained(cls, model_id, **kwargs):
+        return cls()
+
+    def __init__(self):
+        self.model = _BackendOptimizerChronosModel()
+
+    def predict_quantiles(self, context, prediction_length):
+        point = torch.zeros(context.shape[0], prediction_length)
+        quantiles = torch.zeros(context.shape[0], prediction_length, 9)
+        return quantiles, point
+
+
+def _install_backend_optimizer_chronos(monkeypatch):
+    module = types.ModuleType("chronos")
+    module.Chronos2Pipeline = _BackendOptimizerChronosPipeline
+    monkeypatch.setitem(sys.modules, "chronos", module)
+
+
+@pytest.mark.parametrize("mode", ["adapter", "full", "last_layer"])
+def test_chronos2_backend_optimizer_step_changes_only_permitted_state(monkeypatch, mode):
+    _install_backend_optimizer_chronos(monkeypatch)
+    from models.Chronos2 import Chronos2Backend
+    from models.registry import get_model_spec
+
+    backend = Chronos2Backend(get_model_spec("Chronos2"), device="cpu")
+    history = torch.ones(1, 3, 1)
+    target = torch.zeros(1, 2, 1)
+    target_mask = torch.ones(1, 2, dtype=torch.bool)
+    _assert_backend_optimizer_step_is_audited(
+        backend,
+        backend.model,
+        mode,
+        (history, target, target_mask),
+    )
+
+
+class _BackendOptimizerTimesFMModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.decoder = nn.Linear(1, 1)
+        self.output_projection_point = nn.Linear(1, 1)
+
+    def forward(self, *, past_values, return_dict):
+        values = torch.stack(past_values, dim=0)
+        hidden = self.decoder(values[:, -1:].unsqueeze(-1))
+        point = self.output_projection_point(hidden).squeeze(-1)
+        return types.SimpleNamespace(mean_predictions=point.expand(-1, 5))
+
+
+class _BackendOptimizerTimesFMClass:
+    @classmethod
+    def from_pretrained(cls, model_id, **kwargs):
+        return _BackendOptimizerTimesFMModel()
+
+
+def _install_backend_optimizer_timesfm(monkeypatch):
+    module = types.ModuleType("transformers")
+    module.TimesFm2_5ModelForPrediction = _BackendOptimizerTimesFMClass
+    monkeypatch.setitem(sys.modules, "transformers", module)
+
+
+@pytest.mark.parametrize("mode", ["adapter", "full", "last_layer"])
+def test_timesfm_backend_optimizer_step_changes_only_permitted_state(monkeypatch, mode):
+    _install_backend_optimizer_timesfm(monkeypatch)
+    from models.TimesFM import TimesFMBackend
+    from models.registry import get_model_spec
+
+    backend = TimesFMBackend(get_model_spec("TimesFM"), device="cpu")
+    history = torch.ones(1, 3, 1)
+    target = torch.zeros(1, 2, 1)
+    target_mask = torch.ones(1, 2, dtype=torch.bool)
+    _assert_backend_optimizer_step_is_audited(
+        backend,
+        backend.model,
+        mode,
+        (history, target, target_mask),
+    )
+
+
+class _BoundaryChronosModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(1.0))
+        self.chronos_config = types.SimpleNamespace(output_patch_size=1)
+
+    def forward(self, **kwargs):
+        return types.SimpleNamespace(loss=self.weight * kwargs["future_target"].sum())
+
+
+class _BoundaryChronosPipeline:
+    output_kind = "valid"
+
+    @classmethod
+    def from_pretrained(cls, model_id, **kwargs):
+        return cls()
+
+    def __init__(self):
+        self.model = _BoundaryChronosModel()
+
+    def predict_quantiles(self, context, prediction_length):
+        batch = context.shape[0]
+        if self.output_kind == "malformed":
+            point = torch.ones(batch, prediction_length, 2)
+        elif self.output_kind == "nonfinite":
+            point = torch.tensor([[1.0, float("nan")]]).expand(batch, -1)
+        elif self.output_kind == "short":
+            point = torch.ones(batch, max(1, prediction_length - 1))
+        else:
+            point = torch.arange(prediction_length, dtype=context.dtype).expand(batch, -1)
+        return torch.zeros(batch, prediction_length, 9), point
+
+
+def _install_boundary_chronos(monkeypatch, output_kind):
+    module = types.ModuleType("chronos")
+    _BoundaryChronosPipeline.output_kind = output_kind
+    module.Chronos2Pipeline = _BoundaryChronosPipeline
+    monkeypatch.setitem(sys.modules, "chronos", module)
+
+
+@pytest.mark.parametrize("output_kind", ["malformed", "nonfinite", "short"])
+def test_chronos2_rejects_malformed_nonfinite_and_short_point_outputs(monkeypatch, output_kind):
+    _install_boundary_chronos(monkeypatch, output_kind)
+    from models.Chronos2 import Chronos2Backend
+    from models.registry import get_model_spec
+
+    backend = Chronos2Backend(get_model_spec("Chronos2"), device="cpu")
+    with pytest.raises(ValueError):
+        backend.predict(torch.ones(1, 3, 1), 2)
+
+
+def test_chronos2_reports_directed_missing_optional_dependency(monkeypatch):
+    monkeypatch.setitem(sys.modules, "chronos", None)
+    from models.Chronos2 import Chronos2Backend
+    from models.registry import get_model_spec
+
+    with pytest.raises(ImportError, match="chronos-forecasting.*Python 3.10"):
+        Chronos2Backend(get_model_spec("Chronos2"), device="cpu")
+
+
+class _BoundaryTiRexModel(nn.Module):
+    output_kind = "valid"
+
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(1.0))
+
+    def forecast(self, *, context, prediction_length):
+        batch = context.shape[0]
+        if self.output_kind == "malformed":
+            point = torch.ones(batch, prediction_length, 2)
+        elif self.output_kind == "nonfinite":
+            point = torch.tensor([[1.0, float("nan")]]).expand(batch, -1)
+        elif self.output_kind == "short":
+            point = torch.ones(batch, max(1, prediction_length - 1))
+        else:
+            point = torch.arange(prediction_length, dtype=context.dtype).expand(batch, -1)
+        return torch.zeros(batch, 9, prediction_length), point
+
+
+def _install_boundary_tirex(monkeypatch, output_kind):
+    module = types.ModuleType("tirex")
+    model = _BoundaryTiRexModel()
+    model.output_kind = output_kind
+
+    def load_model(model_id, **kwargs):
+        return model
+
+    module.load_model = load_model
+    monkeypatch.setitem(sys.modules, "tirex", module)
+
+
+@pytest.mark.parametrize("output_kind", ["malformed", "nonfinite", "short"])
+def test_tirex_rejects_malformed_nonfinite_and_short_point_outputs(monkeypatch, output_kind):
+    _install_boundary_tirex(monkeypatch, output_kind)
+    from models.TiRex import TiRexBackend
+    from models.registry import get_model_spec
+
+    backend = TiRexBackend(get_model_spec("TiRex"), device="cpu")
+    with pytest.raises(ValueError):
+        backend.predict(torch.ones(1, 3, 1), 2)
+
+
+def test_tirex_reports_directed_missing_optional_dependency(monkeypatch):
+    monkeypatch.setitem(sys.modules, "tirex", None)
+    from models.TiRex import TiRexBackend
+    from models.registry import get_model_spec
+
+    with pytest.raises(ImportError, match="tirex-ts.*Python 3.10"):
+        TiRexBackend(get_model_spec("TiRex"), device="cpu")
+
+
+class _BoundaryTimesFMModel(nn.Module):
+    output_kind = "valid"
+
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, *, past_values, return_dict):
+        batch = len(past_values)
+        horizon = 2
+        if self.output_kind == "malformed":
+            point = torch.ones(batch, horizon, 2)
+        elif self.output_kind == "nonfinite":
+            point = torch.tensor([[1.0, float("nan")]]).expand(batch, -1)
+        elif self.output_kind == "short":
+            point = torch.ones(batch, 1)
+        else:
+            point = torch.ones(batch, horizon)
+        return types.SimpleNamespace(mean_predictions=point)
+
+
+class _BoundaryTimesFMClass:
+    output_kind = "valid"
+
+    @classmethod
+    def from_pretrained(cls, model_id, **kwargs):
+        model = _BoundaryTimesFMModel()
+        model.output_kind = cls.output_kind
+        return model
+
+
+def _install_boundary_timesfm(monkeypatch, output_kind):
+    module = types.ModuleType("transformers")
+    _BoundaryTimesFMClass.output_kind = output_kind
+    module.TimesFm2_5ModelForPrediction = _BoundaryTimesFMClass
+    monkeypatch.setitem(sys.modules, "transformers", module)
+
+
+@pytest.mark.parametrize("output_kind", ["malformed", "nonfinite", "short"])
+def test_timesfm_rejects_malformed_nonfinite_and_short_point_outputs(monkeypatch, output_kind):
+    _install_boundary_timesfm(monkeypatch, output_kind)
+    from models.TimesFM import TimesFMBackend
+    from models.registry import get_model_spec
+
+    backend = TimesFMBackend(get_model_spec("TimesFM"), device="cpu")
+    with pytest.raises(ValueError):
+        backend.predict(torch.ones(1, 3, 1), 2)
+
+
+def test_timesfm_reports_directed_missing_optional_dependency(monkeypatch):
+    monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
+    from models.TimesFM import TimesFMBackend
+    from models.registry import get_model_spec
+
+    with pytest.raises(ImportError, match="TimesFm2_5ModelForPrediction.*Python 3.10"):
+        TimesFMBackend(get_model_spec("TimesFM"), device="cpu")
