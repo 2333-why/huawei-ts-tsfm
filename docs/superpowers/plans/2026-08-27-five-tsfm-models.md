@@ -105,4 +105,3 @@
 - Every production behavior has a named RED test and hand-derived expected contract. File absence and human prose are verified by delivery audits, not brittle source-text unit tests.
 - The plan preserves existing artifact semantics and user files, while removing only code demonstrably unrelated to TSFM.
 - The unavoidable Python 3.8/upstream incompatibility is a first-class preflight result, not hidden behind mocks or automatic environment mutation.
-

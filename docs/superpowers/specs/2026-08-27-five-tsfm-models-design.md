@@ -148,4 +148,3 @@ config + Parquet
 - fake-runner 双 GPU smoke 产生 68 个 PASS，且两个物理 GPU 队列各自串行、整体存在并发、失败可传播。
 - `scripts/check_foundation_environment.py` 在当前解释器诚实报告三模型的 Python/package 阻塞；Sundial/TimeMoE 的已安装路径继续可检查。
 - 只有依赖和 checkpoint 真正可用时才运行每个模型的单 batch GPU smoke。未运行的真实 smoke 在交付报告中列为外部环境限制，不能由 fake 结果替代。
-
