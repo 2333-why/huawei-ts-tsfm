@@ -11,8 +11,9 @@ from torch import nn
 from .common import (
     _GenerateBackend,
     _denormalise,
-    _generated_tensor,
+    _model_dtype,
     _positive_config_int,
+    _repair_rotary_runtime_buffers,
     _validate_loss,
 )
 
@@ -22,23 +23,67 @@ class TimeMoEBackend(_GenerateBackend):
 
     model_name = "TimeMoE"
 
+    def __init__(self, spec, device, revision=None):
+        super().__init__(spec=spec, device=device, revision=revision)
+        _repair_rotary_runtime_buffers(self.model)
+
     def predict(self, history: torch.Tensor, pred_len: int) -> torch.Tensor:
         with torch.inference_mode():
             history, pred_len, (normalized, means, stdev) = self._inputs(
                 history, pred_len
             )
-            output = _generated_tensor(
-                self.model.generate(
-                    normalized[..., 0],
-                    max_new_tokens=pred_len,
-                )
+            context = normalized.to(device=self.device, dtype=_model_dtype(self.model, normalized.dtype))
+            config = getattr(self.model, "config", None)
+            if config is None:
+                raise ValueError("TimeMoE model is missing its config")
+            input_size = _positive_config_int(
+                getattr(config, "input_size", None), "input_size"
             )
-            if output.ndim < 2:
-                raise ValueError(
-                    "TimeMoE model.generate output must include a time axis"
+            if input_size != 1:
+                raise ValueError("TimeMoE prediction currently requires input_size == 1")
+
+            remaining = pred_len
+            output_chunks = []
+            while remaining:
+                native = self.model(
+                    input_ids=context,
+                    max_horizon_length=remaining,
+                    use_cache=False,
+                    return_dict=True,
                 )
-            cropped = output[:, -pred_len:]
-            return _denormalise(cropped, means, stdev, history.shape[0], pred_len)
+                if isinstance(native, Mapping):
+                    logits = native.get("logits")
+                else:
+                    logits = getattr(native, "logits", None)
+                if not torch.is_tensor(logits):
+                    raise ValueError("TimeMoE native model must return logits as a tensor")
+                if logits.ndim != 3:
+                    raise ValueError(
+                        "TimeMoE native logits must have shape [batch, time, flat_horizon]"
+                    )
+                batch, time, flat_horizon = logits.shape
+                if batch != context.shape[0] or time != context.shape[1]:
+                    raise ValueError(
+                        "TimeMoE native logits must preserve batch and context time dimensions"
+                    )
+                if flat_horizon % input_size:
+                    raise ValueError(
+                        "TimeMoE native logits horizon must be divisible by input_size"
+                    )
+                chunk = logits[:, -1, :].reshape(batch, -1, input_size)
+                chunk = chunk[:, :remaining, :]
+                if chunk.shape[1] == 0:
+                    raise ValueError("TimeMoE native logits produced an empty forecast chunk")
+                output_chunks.append(chunk)
+                context = torch.cat(
+                    (context, chunk.to(device=context.device, dtype=context.dtype)), dim=1
+                )
+                remaining -= int(chunk.shape[1])
+
+            normalized_forecast = torch.cat(output_chunks, dim=1)
+            return _denormalise(
+                normalized_forecast, means, stdev, history.shape[0], pred_len
+            )
 
     @staticmethod
     def _native_horizons(model: Any, config: Any) -> List[Tuple[int, Any]]:

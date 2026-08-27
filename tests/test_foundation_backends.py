@@ -304,39 +304,41 @@ def test_sundial_backend_uses_native_forward_when_generate_cache_api_is_incompat
     )
 
 
-def test_sundial_backend_rebuilds_corrupt_rotary_runtime_buffers(monkeypatch):
-    class _RemoteRotary(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.dim = 4
-            self.base = 10000
-            self.max_position_embeddings = 8
-            self.register_buffer(
-                "inv_freq", torch.tensor([float("nan"), float("inf")]), persistent=False
-            )
-            self.register_buffer(
-                "cos_cached",
-                torch.full((1, 1, self.max_position_embeddings, self.dim), float("nan")),
-                persistent=False,
-            )
-            self.register_buffer(
-                "sin_cached",
-                torch.full((1, 1, self.max_position_embeddings, self.dim), float("nan")),
-                persistent=False,
-            )
-            self.cache_calls = []
+class _CorruptRotary(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.dim = 4
+        self.base = 10000
+        self.max_position_embeddings = 8
+        self.register_buffer(
+            "inv_freq", torch.tensor([float("nan"), float("inf")]), persistent=False
+        )
+        self.register_buffer(
+            "cos_cached",
+            torch.full((1, 1, self.max_position_embeddings, self.dim), float("nan")),
+            persistent=False,
+        )
+        self.register_buffer(
+            "sin_cached",
+            torch.full((1, 1, self.max_position_embeddings, self.dim), float("nan")),
+            persistent=False,
+        )
+        self.cache_calls = []
 
-        def _set_cos_sin_cache(self, seq_len, device=None, dtype=None):
-            self.cache_calls.append((seq_len, device, dtype))
-            positions = torch.arange(seq_len, device=device, dtype=dtype)
-            frequencies = torch.outer(positions, self.inv_freq.to(device=device, dtype=dtype))
-            embedding = torch.cat((frequencies, frequencies), dim=-1)
-            self.cos_cached = embedding.cos()[None, None, :, :]
-            self.sin_cached = embedding.sin()[None, None, :, :]
+    def _set_cos_sin_cache(self, seq_len, device=None, dtype=None):
+        self.cache_calls.append((seq_len, device, dtype))
+        positions = torch.arange(seq_len, device=device, dtype=dtype)
+        frequencies = torch.outer(positions, self.inv_freq.to(device=device, dtype=dtype))
+        embedding = torch.cat((frequencies, frequencies), dim=-1)
+        self.cos_cached = embedding.cos()[None, None, :, :]
+        self.sin_cached = embedding.sin()[None, None, :, :]
+
+
+def test_sundial_backend_rebuilds_corrupt_rotary_runtime_buffers(monkeypatch):
 
     class _SundialCorruptLoadedModel:
         def __init__(self):
-            self.rotary = _RemoteRotary()
+            self.rotary = _CorruptRotary()
             self.to_devices = []
             self.eval_calls = 0
             self.native_calls = []
@@ -420,11 +422,155 @@ def test_sundial_backend_rebuilds_corrupt_rotary_runtime_buffers(monkeypatch):
     )
 
 
+class _TimeMoECompatLoadedModel:
+    def __init__(self):
+        self.rotary = _CorruptRotary()
+        self.weight = nn.Parameter(torch.tensor(1.0, dtype=torch.bfloat16))
+        self.config = types.SimpleNamespace(input_size=1, horizon_lengths=[1, 2, 4])
+        self.to_devices = []
+        self.eval_calls = 0
+        self.generate_calls = []
+        self.native_calls = []
+        self._normalized_chunks = {
+            4: torch.tensor([0.5, 1.0, 1.5, 2.0]),
+            2: torch.tensor([2.5, 3.0]),
+            1: torch.tensor([3.5]),
+        }
+
+    def parameters(self):
+        yield self.weight
+
+    def to(self, device):
+        self.to_devices.append(device)
+        return self
+
+    def eval(self):
+        self.eval_calls += 1
+        return self
+
+    def modules(self):
+        return (self.rotary,)
+
+    def generate(self, *args, **kwargs):
+        self.generate_calls.append((args, kwargs))
+        raise AttributeError("'DynamicCache' object has no attribute 'seen_tokens'")
+
+    def __call__(self, **kwargs):
+        self.native_calls.append(
+            {
+                key: value.detach().clone() if torch.is_tensor(value) else value
+                for key, value in kwargs.items()
+            }
+        )
+        input_ids = kwargs["input_ids"]
+        if input_ids.ndim != 3 or input_ids.dtype != torch.bfloat16:
+            raise AssertionError("TimeMoE native context must be bfloat16 [batch, time, 1]")
+        expected_positions = torch.arange(0, self.rotary.dim, 2, dtype=torch.float32)
+        expected_inv_freq = 1.0 / (
+            self.rotary.base ** (expected_positions / self.rotary.dim)
+        )
+        expected_frequencies = torch.outer(
+            torch.arange(
+                self.rotary.max_position_embeddings,
+                dtype=self.rotary.inv_freq.dtype,
+            ),
+            expected_inv_freq,
+        )
+        expected_embedding = torch.cat((expected_frequencies, expected_frequencies), dim=-1)
+        buffers_match = (
+            torch.isfinite(self.rotary.inv_freq).all()
+            and torch.allclose(self.rotary.inv_freq, expected_inv_freq)
+            and torch.isfinite(self.rotary.cos_cached).all()
+            and torch.isfinite(self.rotary.sin_cached).all()
+            and torch.allclose(
+                self.rotary.cos_cached,
+                expected_embedding.cos()[None, None, :, :],
+            )
+            and torch.allclose(
+                self.rotary.sin_cached,
+                expected_embedding.sin()[None, None, :, :],
+            )
+        )
+        max_horizon = kwargs["max_horizon_length"]
+        selected_horizon = max(
+            horizon for horizon in self.config.horizon_lengths if horizon <= max_horizon
+        )
+        normalized_chunk = self._normalized_chunks[selected_horizon]
+        logits = torch.full(
+            (
+                input_ids.shape[0],
+                input_ids.shape[1],
+                selected_horizon * self.config.input_size,
+            ),
+            float("nan") if not buffers_match else 0.0,
+        )
+        if buffers_match:
+            logits[:, -1, :] = normalized_chunk
+        return types.SimpleNamespace(logits=logits)
+
+
+def test_timemoe_backend_uses_native_no_cache_chunks_for_transformers_compatibility(
+    monkeypatch,
+):
+    history = torch.tensor([[[1.0], [3.0], [5.0]]])
+    loaded = _TimeMoECompatLoadedModel()
+    _install_fake_transformers(monkeypatch, loaded)
+
+    from models.factory import build_backend
+
+    backend = build_backend("TimeMoE", "cpu")
+    output = backend.predict(history, pred_len=6)
+
+    assert loaded.to_devices == ["cpu"]
+    assert loaded.eval_calls == 1
+    assert loaded.generate_calls == []
+    assert len(loaded.native_calls) == 2
+    assert [call["max_horizon_length"] for call in loaded.native_calls] == [6, 2]
+    assert [call["input_ids"].shape for call in loaded.native_calls] == [
+        (1, 3, 1),
+        (1, 7, 1),
+    ]
+    assert all(call["input_ids"].dtype == torch.bfloat16 for call in loaded.native_calls)
+    assert all(call["input_ids"].ndim == 3 for call in loaded.native_calls)
+    assert all(call["use_cache"] is False for call in loaded.native_calls)
+    assert all(call["return_dict"] is True for call in loaded.native_calls)
+    assert torch.equal(
+        loaded.native_calls[1]["input_ids"].to(dtype=torch.float32)[:, -4:, 0],
+        torch.tensor([[0.5, 1.0, 1.5, 2.0]]),
+    )
+    assert torch.allclose(loaded.rotary.inv_freq, torch.tensor([1.0, 0.01]), atol=1e-6)
+    assert torch.isfinite(loaded.rotary.cos_cached).all()
+    assert torch.isfinite(loaded.rotary.sin_cached).all()
+    assert torch.allclose(
+        loaded.rotary.cos_cached[0, 0, 0],
+        torch.tensor([1.0, 1.0, 1.0, 1.0]),
+    )
+    assert torch.allclose(
+        loaded.rotary.sin_cached[0, 0, 0],
+        torch.tensor([0.0, 0.0, 0.0, 0.0]),
+        atol=1e-6,
+    )
+    expected_scale = math.sqrt(8.0 / 3.0 + 1e-5)
+    expected = torch.tensor(
+        [
+            [
+                [3.0 + 0.5 * expected_scale],
+                [3.0 + 1.0 * expected_scale],
+                [3.0 + 1.5 * expected_scale],
+                [3.0 + 2.0 * expected_scale],
+                [3.0 + 2.5 * expected_scale],
+                [3.0 + 3.0 * expected_scale],
+            ]
+        ]
+    )
+    assert output.shape == (1, 6, 1)
+    assert torch.isfinite(output).all()
+    assert torch.allclose(output, expected)
+
+
 def test_timemoe_backend_overrides_revision_and_crops_last_horizon(monkeypatch):
     history = torch.tensor([[[2.0], [4.0], [6.0]]])
-    loaded = _FakeLoadedModel(
-        lambda values, kwargs: torch.tensor([[99.0, 98.0, 2.0, 4.0]])
-    )
+    loaded = _TimeMoECompatLoadedModel()
     loader_calls = _install_fake_transformers(monkeypatch, loaded)
 
     from models.factory import build_backend
@@ -440,14 +586,19 @@ def test_timemoe_backend_overrides_revision_and_crops_last_horizon(monkeypatch):
             {"revision": "test-revision", "trust_remote_code": True},
         )
     ]
-    generated_values, generated_kwargs = loaded.generate_calls[0]
-    assert generated_values.shape == (1, 3)
-    assert generated_kwargs == {"max_new_tokens": 2}
+    assert loaded.generate_calls == []
+    assert len(loaded.native_calls) == 1
+    native_call = loaded.native_calls[0]
+    assert native_call["input_ids"].shape == (1, 3, 1)
+    assert native_call["input_ids"].dtype == torch.bfloat16
+    assert native_call["max_horizon_length"] == 2
+    assert native_call["use_cache"] is False
+    assert native_call["return_dict"] is True
     expected_scale = math.sqrt(8.0 / 3.0 + 1e-5)
     assert torch.allclose(
         output,
         torch.tensor(
-            [[[4.0 + 2.0 * expected_scale], [4.0 + 4.0 * expected_scale]]]
+            [[[4.0 + 2.5 * expected_scale], [4.0 + 3.0 * expected_scale]]]
         ),
     )
 

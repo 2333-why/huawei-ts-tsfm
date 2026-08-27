@@ -10,6 +10,7 @@ from .common import (
     _extract_loss,
     _generated_tensor,
     _positive_config_int,
+    _repair_rotary_runtime_buffers,
     _validate_loss,
 )
 
@@ -21,44 +22,7 @@ class SundialBackend(_GenerateBackend):
 
     def __init__(self, spec, device, revision=None):
         super().__init__(spec=spec, device=device, revision=revision)
-        modules = getattr(self.model, "modules", None)
-        if not callable(modules):
-            return
-        for module in modules():
-            dim = getattr(module, "dim", None)
-            base = getattr(module, "base", None)
-            max_position_embeddings = getattr(module, "max_position_embeddings", None)
-            inv_freq = getattr(module, "inv_freq", None)
-            set_cos_sin_cache = getattr(module, "_set_cos_sin_cache", None)
-            if not (
-                isinstance(dim, int)
-                and dim > 0
-                and isinstance(base, (int, float))
-                and base > 0
-                and isinstance(max_position_embeddings, int)
-                and max_position_embeddings > 0
-                and torch.is_tensor(inv_freq)
-                and callable(set_cos_sin_cache)
-            ):
-                continue
-            positions = torch.arange(
-                0,
-                dim,
-                2,
-                device=inv_freq.device,
-                dtype=torch.float32,
-            )
-            rebuilt_inv_freq = 1.0 / (base ** (positions / dim))
-            register_buffer = getattr(module, "register_buffer", None)
-            if callable(register_buffer):
-                register_buffer("inv_freq", rebuilt_inv_freq, persistent=False)
-            else:
-                module.inv_freq = rebuilt_inv_freq
-            set_cos_sin_cache(
-                seq_len=max_position_embeddings,
-                device=rebuilt_inv_freq.device,
-                dtype=rebuilt_inv_freq.dtype,
-            )
+        _repair_rotary_runtime_buffers(self.model)
 
     def predict(self, history: torch.Tensor, pred_len: int) -> torch.Tensor:
         with torch.inference_mode():
