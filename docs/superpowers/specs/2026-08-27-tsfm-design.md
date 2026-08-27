@@ -31,6 +31,12 @@
 
 每个 checkpoint 和 `metrics.json` 都记录：运行模式、模型 ID、模型 revision、总参数数、可训练参数数、可训练参数名摘要、训练/验证/测试步数。训练模式不能通过仅训练一个新建的通用回归头来冒充基础模型微调。
 
+### 模型原生训练目标的精确定义
+
+两个后端都只把归一化历史 `[B, seq_len, 1]` 送入基础模型；目标只参与损失计算，不能作为 teacher-forcing 输入。Sundial 使用固定 revision 暴露的 `flow_loss`，只启用最后一个历史 patch 对应的预测窗口，并用 `mask_y` 限定真实 horizon。由于该 revision 对异质 batch mask 的 repeat 顺序不安全，训练损失逐样本调用后取均值。
+
+TimeMoE 官方 `outputs.loss` 对多步目标采用 `seq[:-1] -> seq[1:]` teacher forcing，并在 1/8/32/64 多个 head 上混合重叠预测起点；这与本方案的 history-only、单一 issue-time 契约冲突。因此后端调用原生 backbone 处理历史，选择能覆盖 `pred_len` 的最小原生 `lm_heads` horizon，裁剪到目标长度，并用模型自带的 Huber loss 与 `target_mask` 计算标量损失。该路径不加入 history-wide router auxiliary loss，也不新建通用预测头。两种损失都必须拒绝零有效目标、非标量、非有限或在训练模式下无梯度的结果。
+
 ## 架构
 
 新增独立入口 `run_foundation_model.py`，不把基础模型的特殊生命周期塞入现有 `run_time_series.py`。数据读取、反归一化、指标和预测文件格式复用现有纯时序代码中的稳定行为。
