@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import tempfile
 from dataclasses import asdict, is_dataclass
 from datetime import timedelta
@@ -68,6 +69,25 @@ COMPLETION_HEADER = (
     "model_revision",
 )
 FOUNDATION_COMPLETION_HEADER = COMPLETION_HEADER
+
+
+def _seed_everything(seed: Any) -> int:
+    """Seed every local numerical RNG before constructing run state."""
+
+    if isinstance(seed, bool):
+        raise ValueError("seed must be an integer")
+    try:
+        seed = int(seed)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("seed must be an integer") from exc
+    if seed < 0:
+        raise ValueError("seed must be non-negative")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    return seed
 
 
 def _read_config(path: Path) -> dict:
@@ -159,6 +179,15 @@ def _validate_runtime_args(args: Any) -> None:
     learning_rate = float(getattr(args, "learning_rate", 1e-3))
     if not math.isfinite(learning_rate) or learning_rate <= 0:
         raise ValueError("learning_rate must be finite and positive")
+    seed = getattr(args, "seed", 2024)
+    if isinstance(seed, bool):
+        raise ValueError("seed must be an integer")
+    try:
+        args.seed = int(seed)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("seed must be an integer") from exc
+    if args.seed < 0:
+        raise ValueError("seed must be non-negative")
     workers = int(getattr(args, "num_workers", 0))
     if workers < 0:
         raise ValueError("num_workers must be non-negative")
@@ -357,6 +386,7 @@ def _collect_predictions(
     pred_len: int,
     max_steps: Optional[int],
     phase: str,
+    compute_loss: Optional[bool] = None,
 ) -> Dict[str, Any]:
     model = getattr(backend, "model", None)
     if model is None or not callable(getattr(model, "eval", None)):
@@ -369,6 +399,10 @@ def _collect_predictions(
     masks: List[np.ndarray] = []
     issue_times: List[np.ndarray] = []
     steps = 0
+    if phase == "test":
+        compute_loss = False
+    elif compute_loss is None:
+        compute_loss = True
 
     for batch in _limited_batches(loader, max_steps):
         history, target, target_mask = _prepare_batch(batch, device, seq_len, pred_len)
@@ -377,11 +411,12 @@ def _collect_predictions(
             prediction = _validate_prediction(
                 backend.predict(history, pred_len), history.shape[0], pred_len
             )
-        batch_mask = target_mask.unsqueeze(-1).to(dtype=prediction.dtype)
-        squared = (prediction - target).square()
-        if not bool(torch.isfinite(squared).all()):
-            raise ValueError(f"{phase} prediction loss is non-finite")
-        total_sse += float((squared * batch_mask).sum().detach().cpu().item())
+        if compute_loss:
+            batch_mask = target_mask.unsqueeze(-1).to(dtype=prediction.dtype)
+            squared = (prediction - target).square()
+            if not bool(torch.isfinite(squared).all()):
+                raise ValueError(f"{phase} prediction loss is non-finite")
+            total_sse += float((squared * batch_mask).sum().detach().cpu().item())
         total_valid += int(target_mask.sum().item())
         predictions.append(prediction.detach().cpu().numpy())
         targets.append(target.detach().cpu().numpy())
@@ -393,8 +428,8 @@ def _collect_predictions(
         raise RuntimeError(f"{phase} loader is empty; max_steps={limit_label} requires at least one batch")
     if total_valid == 0:
         raise RuntimeError(f"{phase} phase has zero valid targets")
-    loss = total_sse / total_valid
-    if not math.isfinite(loss):
+    loss = total_sse / total_valid if compute_loss else None
+    if compute_loss and not math.isfinite(loss):
         raise ValueError(f"{phase} prediction loss is non-finite")
     return {
         "loss": loss,
@@ -439,7 +474,7 @@ def _clip_result(result: Mapping[str, Any], dataset: Any) -> Dict[str, Any]:
     valid = int(mask.sum())
     if valid <= 0:
         raise RuntimeError("test phase has zero valid targets")
-    squared = (clipped - target) ** 2
+    squared = (clipped.astype(np.float64) - target.astype(np.float64)) ** 2
     if not np.isfinite(squared).all():
         raise ValueError("test prediction loss is non-finite")
     copied["loss"] = float((squared[..., 0][mask]).sum()) / valid
@@ -542,14 +577,28 @@ def _lora_payload(settings: LoraSettings) -> Dict[str, Any]:
 def _identity(backend: Any, model_name: str) -> Tuple[str, str]:
     spec = get_model_spec(model_name)
     model_id_value = getattr(backend, "model_id", None)
-    model_id = str(spec.model_id if model_id_value is None else model_id_value)
+    if model_id_value is None:
+        raise ValueError("backend did not expose its pinned model_id")
+    model_id = str(model_id_value)
     revision_value = getattr(backend, "revision", None)
     if revision_value is None:
         revision_value = getattr(backend, "effective_revision", None)
     if revision_value is None:
-        revision_value = getattr(backend, "model_revision", spec.revision)
+        revision_value = getattr(backend, "model_revision", None)
+    if revision_value is None:
+        raise ValueError("backend did not expose its pinned revision")
     revision = str(revision_value)
-    return model_id, revision
+    if model_id != str(spec.model_id):
+        raise ValueError(
+            f"backend model_id {model_id!r} does not match pinned registry identity "
+            f"{spec.model_id!r}"
+        )
+    if revision != str(spec.revision):
+        raise ValueError(
+            f"backend revision {revision!r} does not match pinned registry revision "
+            f"{spec.revision!r}"
+        )
+    return str(spec.model_id), str(spec.revision)
 
 
 def _state_dict_cpu(model: Any) -> Dict[str, Any]:
@@ -621,7 +670,18 @@ def _checkpoint_payload(
     val_loss: Optional[float],
     model_id: str,
     revision: str,
+    epochs: Optional[int] = None,
+    phase_steps: Optional[Mapping[str, int]] = None,
 ) -> Dict[str, Any]:
+    if epochs is None:
+        epochs = int(getattr(args, "epochs", 0))
+    if phase_steps is None:
+        phase_steps = {"train": 0, "val": 0, "test": 0}
+    phase_steps = {
+        "train": int(phase_steps["train"]),
+        "val": int(phase_steps["val"]),
+        "test": int(phase_steps["test"]),
+    }
     payload = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "dataset": str(args.dataset),
@@ -639,10 +699,39 @@ def _checkpoint_payload(
         "trainability_report": dict(report),
         "epoch": epoch,
         "val_loss": val_loss,
+        "epochs": int(epochs),
+        "train_steps": phase_steps["train"],
+        "val_steps": phase_steps["val"],
+        "test_steps": phase_steps["test"],
+        "phase_steps": phase_steps,
+        "seed": int(getattr(args, "seed", 2024)),
     }
     if mode != "zero_shot":
         payload["state_dict"] = _state_dict_cpu(backend.model)
     return _json_safe(payload)
+
+
+def _finalize_checkpoint(
+    path: Path,
+    checkpoint: Mapping[str, Any],
+    args: Any,
+    phase_steps: Mapping[str, int],
+) -> None:
+    """Publish final lifecycle counts without replacing a restored model state."""
+
+    final_payload = dict(checkpoint)
+    normalized_steps = {
+        "train": int(phase_steps["train"]),
+        "val": int(phase_steps["val"]),
+        "test": int(phase_steps["test"]),
+    }
+    final_payload["epochs"] = int(args.epochs)
+    final_payload["train_steps"] = normalized_steps["train"]
+    final_payload["val_steps"] = normalized_steps["val"]
+    final_payload["test_steps"] = normalized_steps["test"]
+    final_payload["phase_steps"] = normalized_steps
+    final_payload["seed"] = int(args.seed)
+    _atomic_torch_save(final_payload, path)
 
 
 def _validate_checkpoint_identity(
@@ -669,6 +758,7 @@ def _validate_checkpoint_identity(
         "lora_settings": dict(lora_settings),
         "trainability": dict(report),
         "trainability_report": dict(report),
+        "seed": int(getattr(args, "seed", 2024)),
     }
     for key, value in expected.items():
         if checkpoint.get(key) != value:
@@ -816,6 +906,7 @@ def run(args: Any) -> Dict[str, Path]:
         if output_dir is None:
             output_dir = _resolve_output_dir(args)
         args.device = _device_from_arg(getattr(args, "device", "auto"))
+        args.seed = _seed_everything(args.seed)
         settings = _lora_settings(args)
         settings_payload = _lora_payload(settings)
         checkpoint_path = output_dir / "best.pt"
@@ -831,21 +922,6 @@ def run(args: Any) -> Dict[str, Path]:
                 backend.configure_trainable(args.mode, settings),
             )
             model_id, revision = _identity(backend, args.model)
-            _atomic_torch_save(
-                _checkpoint_payload(
-                    args,
-                    backend,
-                    test_dataset,
-                    args.mode,
-                    report,
-                    settings_payload,
-                    None,
-                    None,
-                    model_id,
-                    revision,
-                ),
-                checkpoint_path,
-            )
             test_result = _collect_predictions(
                 backend,
                 test_loader,
@@ -854,11 +930,13 @@ def run(args: Any) -> Dict[str, Path]:
                 int(args.pred_len),
                 args.max_test_steps,
                 "test",
+                compute_loss=False,
             )
             history: List[Dict[str, Any]] = []
             best_epoch = None
             best_val_loss = None
             phase_steps = {"train": 0, "val": 0, "test": int(test_result["steps"])}
+            restored_checkpoint = None
         else:
             train_dataset, train_loader = _dataset_and_loader(args, "train")
             val_dataset, val_loader = _dataset_and_loader(args, "val")
@@ -869,6 +947,7 @@ def run(args: Any) -> Dict[str, Path]:
                 args.mode,
                 backend.configure_trainable(args.mode, settings),
             )
+            model_id, revision = _identity(backend, args.model)
             trainable_parameters = [
                 parameter for parameter in backend.model.parameters() if parameter.requires_grad
             ]
@@ -877,7 +956,6 @@ def run(args: Any) -> Dict[str, Path]:
             optimizer = torch.optim.Adam(
                 trainable_parameters, lr=float(getattr(args, "learning_rate", 1e-3))
             )
-            model_id, revision = _identity(backend, args.model)
             best_epoch = None
             best_val_loss = float("inf")
             history = []
@@ -918,6 +996,12 @@ def run(args: Any) -> Dict[str, Path]:
                             val_loss,
                             model_id,
                             revision,
+                            epochs=int(args.epochs),
+                            phase_steps={
+                                "train": total_train_steps + int(train_steps),
+                                "val": total_val_steps + int(val_result["steps"]),
+                                "test": 0,
+                            },
                         ),
                         checkpoint_path,
                     )
@@ -934,7 +1018,7 @@ def run(args: Any) -> Dict[str, Path]:
                 total_val_steps += int(val_result["steps"])
             if best_epoch is None or not checkpoint_path.is_file():
                 raise RuntimeError("training did not produce a checkpoint")
-            _restore_checkpoint(
+            restored_checkpoint = _restore_checkpoint(
                 checkpoint_path,
                 backend,
                 args,
@@ -956,6 +1040,7 @@ def run(args: Any) -> Dict[str, Path]:
                 int(args.pred_len),
                 args.max_test_steps,
                 "test",
+                compute_loss=False,
             )
             phase_steps = {
                 "train": total_train_steps,
@@ -964,6 +1049,26 @@ def run(args: Any) -> Dict[str, Path]:
             }
 
         test_result = _clip_result(test_result, test_dataset)
+        if args.mode == "zero_shot":
+            _atomic_torch_save(
+                _checkpoint_payload(
+                    args,
+                    backend,
+                    test_dataset,
+                    args.mode,
+                    report,
+                    settings_payload,
+                    best_epoch,
+                    best_val_loss,
+                    model_id,
+                    revision,
+                    epochs=int(args.epochs),
+                    phase_steps=phase_steps,
+                ),
+                checkpoint_path,
+            )
+        else:
+            _finalize_checkpoint(checkpoint_path, restored_checkpoint, args, phase_steps)
         step_value = getattr(test_dataset, "forecast_step", None)
         if isinstance(step_value, timedelta):
             step_minutes = int(step_value.total_seconds() // 60)
@@ -983,6 +1088,7 @@ def run(args: Any) -> Dict[str, Path]:
                 "effective_revision": revision,
                 "revision": revision,
                 "mode": args.mode,
+                "seed": int(args.seed),
                 "seq_len": int(test_dataset.seq_len),
                 "pred_len": int(test_dataset.pred_len),
                 "epochs": int(args.epochs),

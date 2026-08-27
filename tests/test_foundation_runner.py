@@ -3,6 +3,9 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import random
+import subprocess
+import sys
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +42,44 @@ class TinyDataset:
         }
 
 
+class LeakageDataset(TinyDataset):
+    def __getitem__(self, index):
+        return {
+            "history": np.array([[11.0], [12.0]], dtype=np.float32),
+            "target": np.array([[101.0], [102.0], [103.0]], dtype=np.float32),
+            "target_mask": np.ones((3,), dtype=bool),
+            "issue_time_ns": np.int64(1735689600000000000),
+        }
+
+
+class ExtremeDataset(TinyDataset):
+    def __init__(self, config_path, flag, history_points, forecast_steps):
+        super().__init__(config_path, flag, history_points, forecast_steps)
+        self.power_scale = 2.0
+        self.rated_power = 4.0
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, index):
+        return {
+            "history": np.full((2, 1), 7.0, dtype=np.float32),
+            "target": np.array([[1.0], [1.0]], dtype=np.float32),
+            "target_mask": np.array([True, False], dtype=bool),
+            "issue_time_ns": np.int64(1735689600000000000),
+        }
+
+
+class RestoreDataset(TinyDataset):
+    def __getitem__(self, index):
+        return {
+            "history": np.zeros((self.seq_len, 1), dtype=np.float32),
+            "target": np.zeros((self.pred_len, 1), dtype=np.float32),
+            "target_mask": np.ones((self.pred_len,), dtype=bool),
+            "issue_time_ns": np.int64(1735689600000000000),
+        }
+
+
 def _batch(value=1.0, target=1.0, mask=None, issue=1735689600000000000):
     if mask is None:
         mask = torch.ones(1, 1, dtype=torch.bool)
@@ -50,20 +91,31 @@ def _batch(value=1.0, target=1.0, mask=None, issue=1735689600000000000):
     }
 
 
+class RecordingModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(0.5))
+        self.strict_loads = []
+
+    def load_state_dict(self, state_dict, strict=True, *args, **kwargs):
+        self.strict_loads.append((dict(state_dict), strict))
+        return super().load_state_dict(state_dict, strict=strict, *args, **kwargs)
+
+
 class FakeBackend:
     instances = []
     optimizer_created = False
 
     def __init__(self, *args, **kwargs):
         self.model_name = "Sundial"
-        self.model_id = "tiny/model"
-        self.revision = "tiny-revision"
-        self.model = nn.Module()
-        self.model.weight = nn.Parameter(torch.tensor(0.5))
+        self.model_id = "thuml/sundial-base-128m"
+        self.revision = "3212e42564493f520593e5414af4367fc4b49226"
+        self.model = RecordingModule()
         self.configure_calls = []
         self.predict_histories = []
+        self.predict_pred_lens = []
         self.loss_calls = []
-        self.load_calls = []
+        self.load_calls = self.model.strict_loads
         FakeBackend.instances.append(self)
 
     def configure_trainable(self, mode, lora):
@@ -87,7 +139,69 @@ class FakeBackend:
 
     def predict(self, history, pred_len):
         self.predict_histories.append(history.detach().clone())
+        self.predict_pred_lens.append(pred_len)
         return self.model.weight.detach().expand(history.shape[0], pred_len, 1)
+
+
+class NestedRestoreModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.base = nn.Linear(1, 1, bias=False)
+        self.lora = nn.Module()
+        self.lora.A = nn.Parameter(torch.tensor(0.0))
+        self.lora.B = nn.Parameter(torch.tensor(0.0))
+        self.head = nn.Linear(1, 1, bias=False)
+        with torch.no_grad():
+            self.base.weight.zero_()
+            self.head.weight.zero_()
+        self.strict_loads = []
+
+    def forecast_value(self):
+        return self.base.weight[0, 0] + self.lora.A + self.lora.B + self.head.weight[0, 0]
+
+    def load_state_dict(self, state_dict, strict=True, *args, **kwargs):
+        self.strict_loads.append((dict(state_dict), strict))
+        return super().load_state_dict(state_dict, strict=strict, *args, **kwargs)
+
+
+class RestoreBackend:
+    def __init__(self, *args, **kwargs):
+        self.model_name = "Sundial"
+        self.model_id = "thuml/sundial-base-128m"
+        self.revision = "3212e42564493f520593e5414af4367fc4b49226"
+        self.model = NestedRestoreModel()
+        self.loss_calls = 0
+
+    def configure_trainable(self, mode, lora):
+        for parameter in self.model.parameters():
+            parameter.requires_grad_(False)
+        if mode == "full":
+            for parameter in self.model.parameters():
+                parameter.requires_grad_(True)
+        elif mode == "adapter":
+            self.model.lora.A.requires_grad_(True)
+            self.model.lora.B.requires_grad_(True)
+        elif mode == "last_layer":
+            self.model.head.weight.requires_grad_(True)
+        names = tuple(sorted(name for name, parameter in self.model.named_parameters() if parameter.requires_grad))
+        total = sum(parameter.numel() for parameter in self.model.parameters())
+        trainable = sum(parameter.numel() for parameter in self.model.parameters() if parameter.requires_grad)
+        return SimpleNamespace(
+            mode=mode,
+            total_parameters=total,
+            trainable_parameters=trainable,
+            trainable_ratio=float(trainable) / total,
+            trainable_names=names,
+            trainable_names_sha256=hashlib.sha256("\n".join(names).encode()).hexdigest(),
+        )
+
+    def training_loss(self, history, target, target_mask):
+        self.loss_calls += 1
+        desired = 0.0 if self.loss_calls == 1 else 10.0
+        return (self.model.forecast_value() - desired).square()
+
+    def predict(self, history, pred_len):
+        return self.model.forecast_value().detach().expand(history.shape[0], pred_len, 1)
 
 
 def _args(module, tmp_path, mode="zero_shot", **overrides):
@@ -152,6 +266,39 @@ def test_list_commands_are_lazy_and_exact(capsys, monkeypatch):
     assert tuple(capsys.readouterr().out.splitlines()) == RUN_MODES
 
 
+def test_list_commands_are_isolated_in_a_fresh_process():
+    repository = Path(__file__).resolve().parents[1]
+    runner = repository / "run_foundation_model.py"
+    code = """
+import builtins
+import runpy
+import sys
+
+real_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name.split('.')[0] in {'transformers', 'peft'}:
+        raise AssertionError('optional model dependency imported during listing')
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+sys.argv = ['run_foundation_model.py', '--list-models']
+try:
+    runpy.run_path(sys.argv[0], run_name='__main__')
+except SystemExit as exc:
+    raise SystemExit(exc.code)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=str(repository),
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == ["Sundial", "TimeMoE"]
+    assert completed.stderr == ""
+
+
 def test_parser_requires_runtime_identity_and_positive_lengths():
     import run_foundation_model
 
@@ -191,12 +338,75 @@ def test_runtime_rejects_cuda_when_unavailable(monkeypatch):
         run_foundation_model._device_from_arg("cuda:0")
 
 
+def test_seed_is_applied_before_dataset_and_backend_and_recorded(monkeypatch, tmp_path):
+    import run_foundation_model
+
+    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    observations = []
+
+    class SeedDataset(TinyDataset):
+        def __init__(self, config_path, flag, history_points, forecast_steps):
+            observations.append(
+                ("dataset", random.random(), float(np.random.random()), float(torch.rand(1)))
+            )
+            super().__init__(config_path, flag, history_points, forecast_steps)
+
+    class SeedBackend(FakeBackend):
+        def __init__(self, *args, **kwargs):
+            observations.append(
+                ("backend", random.random(), float(np.random.random()), float(torch.rand(1)))
+            )
+            super().__init__(*args, **kwargs)
+
+    run_foundation_model.PowerOnlyParquetDataset = SeedDataset
+    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: SeedBackend())
+    args = _args(run_foundation_model, tmp_path, mode="zero_shot", seed=12345)
+
+    random.seed(999)
+    np.random.seed(999)
+    torch.manual_seed(999)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    expected = [
+        ("dataset", random.random(), float(np.random.random()), float(torch.rand(1))),
+        ("backend", random.random(), float(np.random.random()), float(torch.rand(1))),
+    ]
+    random.seed(999)
+    np.random.seed(999)
+    torch.manual_seed(999)
+
+    result = run_foundation_model.run(args)
+
+    assert observations == expected
+    metrics = json.loads(result["metrics"].read_text(encoding="utf-8"))
+    checkpoint = torch.load(result["checkpoint"], map_location="cpu")
+    assert metrics["seed"] == 12345
+    assert checkpoint["seed"] == 12345
+
+
+def test_backend_identity_must_match_pinned_registry(monkeypatch, tmp_path):
+    import run_foundation_model
+
+    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    backend = FakeBackend()
+    backend.model_id = "other/model"
+    backend.revision = "other-revision"
+    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
+    args = _args(run_foundation_model, tmp_path, mode="zero_shot")
+
+    with pytest.raises(ValueError, match="pinned|identity"):
+        run_foundation_model.run(args)
+    assert not (args.output_dir / "completion.tsv").exists()
+
+
 def test_zero_shot_constructs_only_test_without_optimizer_and_writes_artifacts(monkeypatch, tmp_path):
     import run_foundation_model
 
     run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run_foundation_model.PowerOnlyParquetDataset = LeakageDataset
     monkeypatch.setattr(torch.optim, "Adam", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("optimizer")))
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot", smoke=True)
+    args = _args(run_foundation_model, tmp_path, mode="zero_shot", smoke=True, pred_len=3)
     result = run_foundation_model.run(args)
 
     assert [dataset.flag for dataset in TinyDataset.instances] == ["test"]
@@ -204,6 +414,12 @@ def test_zero_shot_constructs_only_test_without_optimizer_and_writes_artifacts(m
     assert [call[0] for call in backend.configure_calls] == ["zero_shot"]
     assert len(backend.loss_calls) == 0
     assert len(backend.predict_histories) == 1
+    assert backend.predict_histories[0].shape == (2, 2, 1)
+    assert torch.equal(
+        backend.predict_histories[0],
+        torch.tensor([[[11.0], [12.0]], [[11.0], [12.0]]]),
+    )
+    assert backend.predict_pred_lens == [3]
     assert set(result) == {"checkpoint", "predictions", "metrics", "completion"}
     assert all(path.is_file() for path in result.values())
     metrics = json.loads(result["metrics"].read_text(encoding="utf-8"))
@@ -213,6 +429,8 @@ def test_zero_shot_constructs_only_test_without_optimizer_and_writes_artifacts(m
     checkpoint = torch.load(result["checkpoint"], map_location="cpu")
     assert checkpoint["mode"] == "zero_shot"
     assert "state_dict" not in checkpoint
+    assert checkpoint["epochs"] == 0
+    assert checkpoint["phase_steps"] == {"train": 0, "val": 0, "test": 1}
 
 
 @pytest.mark.parametrize("mode", ["adapter", "full", "last_layer"])
@@ -230,6 +448,44 @@ def test_training_modes_restore_best_state_and_use_trainable_parameters(monkeypa
     assert metrics["mode"] == mode
     assert metrics["trainability"]["mode"] == mode
     assert metrics["phase_steps"] == {"train": 1, "val": 1, "test": 1}
+    checkpoint = torch.load(result["checkpoint"], map_location="cpu")
+    assert checkpoint["epochs"] == 1
+    assert checkpoint["phase_steps"] == {"train": 1, "val": 1, "test": 1}
+
+
+@pytest.mark.parametrize("mode", ["adapter", "full", "last_layer"])
+def test_training_restores_epoch_zero_best_state_before_test(monkeypatch, tmp_path, mode):
+    import run_foundation_model
+
+    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run_foundation_model.PowerOnlyParquetDataset = RestoreDataset
+    backend = RestoreBackend()
+    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
+    args = _args(
+        run_foundation_model,
+        tmp_path,
+        mode=mode,
+        epochs=2,
+        max_train_steps=1,
+        max_eval_steps=1,
+        max_test_steps=1,
+    )
+
+    result = run_foundation_model.run(args)
+
+    assert backend.model.strict_loads
+    restored_state, strict = backend.model.strict_loads[-1]
+    assert strict is True
+    assert any(name.startswith("lora.") for name in restored_state)
+    metrics = json.loads(result["metrics"].read_text(encoding="utf-8"))
+    assert metrics["best_epoch"] == 0
+    assert metrics["history"][1]["val_loss"] > metrics["history"][0]["val_loss"]
+    checkpoint = torch.load(result["checkpoint"], map_location="cpu")
+    assert checkpoint["epochs"] == 2
+    assert checkpoint["phase_steps"] == {"train": 2, "val": 2, "test": 1}
+    with result["predictions"].open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert float(row["y_pred"]) == 0.0
 
 
 def test_validation_loss_is_weighted_by_valid_points(monkeypatch, tmp_path):
@@ -275,6 +531,43 @@ def test_predictions_are_clipped_before_csv_and_metrics(monkeypatch, tmp_path):
     assert metrics["test_loss_normalized"] == pytest.approx(1.0)
 
 
+def test_float32_extreme_and_bounds_are_clipped_before_test_loss_and_artifacts(monkeypatch, tmp_path):
+    import run_foundation_model
+
+    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run_foundation_model.PowerOnlyParquetDataset = ExtremeDataset
+    backend = FakeBackend()
+    extreme = torch.finfo(torch.float32).max
+    backend.predict = lambda history, pred_len: torch.tensor(
+        [[[extreme], [-1.0]]], dtype=torch.float32
+    ).expand(history.shape[0], pred_len, 1)
+    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
+    args = _args(run_foundation_model, tmp_path, mode="zero_shot", pred_len=2)
+
+    result = run_foundation_model.run(args)
+
+    metrics = json.loads(result["metrics"].read_text(encoding="utf-8"))
+    assert metrics["test_loss_normalized"] == pytest.approx(1.0)
+    assert metrics["metrics_original_power_units"] == {
+        "count": 1,
+        "mae": 2.0,
+        "rmse": 2.0,
+        "nmae": 0.5,
+        "nrmse": 0.5,
+        "mape_percent": 100.0,
+        "nmae_percent": 50.0,
+        "nrmse_percent": 50.0,
+    }
+    with result["predictions"].open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["horizon_minutes"] == "5"
+    assert rows[0]["issue_time"] == "2025-01-01T00:00:00"
+    assert rows[0]["target_time"] == "2025-01-01T00:05:00"
+    assert float(rows[0]["y_true"]) == 2.0
+    assert float(rows[0]["y_pred"]) == 4.0
+
+
 class CountingLoader:
     def __init__(self, batches):
         self.batches = list(batches)
@@ -318,19 +611,23 @@ def test_bad_prediction_leaves_completion_absent(monkeypatch, tmp_path, bad_pred
     assert not (args.output_dir / "completion.tsv").exists()
 
 
-def test_empty_and_all_masked_phases_leave_completion_absent(monkeypatch, tmp_path):
+@pytest.mark.parametrize("failure", ["empty", "masked"])
+@pytest.mark.parametrize("phase", ["train", "val", "test"])
+def test_empty_and_all_masked_phases_leave_completion_absent(monkeypatch, tmp_path, phase, failure):
     import run_foundation_model
 
     run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    valid = [_batch()]
+    failing = [] if failure == "empty" else [_batch(mask=torch.tensor([[False]]))]
+    batches = {name: (failing if name == phase else valid) for name in ("train", "val", "test")}
+    monkeypatch.setattr(
+        run_foundation_model,
+        "_dataset_and_loader",
+        lambda args, flag: (TinyDataset(args.config, flag, 2, 1), batches[flag]),
+    )
     args = _args(run_foundation_model, tmp_path, mode="full")
-    monkeypatch.setattr(run_foundation_model, "_dataset_and_loader", lambda args, flag: (TinyDataset(args.config, flag, 2, 1), [] if flag == "train" else [_batch()]))
-    with pytest.raises(RuntimeError, match="empty"):
-        run_foundation_model.run(args)
-    assert not (args.output_dir / "completion.tsv").exists()
-
-    args = _args(run_foundation_model, tmp_path / "masked", mode="full")
-    monkeypatch.setattr(run_foundation_model, "_dataset_and_loader", lambda args, flag: (TinyDataset(args.config, flag, 2, 1), [_batch(mask=torch.tensor([[False]]))]))
-    with pytest.raises(RuntimeError, match="zero valid targets"):
+    expected = "empty" if failure == "empty" else "zero valid targets"
+    with pytest.raises(RuntimeError, match=expected):
         run_foundation_model.run(args)
     assert not (args.output_dir / "completion.tsv").exists()
 
@@ -344,11 +641,25 @@ def test_completion_contains_absolute_identity_and_exact_hashes(monkeypatch, tmp
     rows = result["completion"].read_text(encoding="utf-8").splitlines()
     assert len(rows) == 2
     header = rows[0].split("\t")
+    assert header == list(run_foundation_model.FOUNDATION_COMPLETION_HEADER)
+    assert all(len(row.split("\t")) == len(header) for row in rows)
     values = dict(zip(header, rows[1].split("\t")))
     assert values["schema_version"] == "2"
+    assert values["dataset"] == "skippd_luoyang"
+    assert values["model"] == "Sundial"
+    assert values["seq_len"] == "2"
+    assert values["pred_len"] == "1"
     assert values["mode"] == "zero_shot"
-    assert values["model_id"] == "tiny/model"
-    assert values["model_revision"] == "tiny-revision"
+    assert values["run_mode"] == "full"
+    assert values["epochs"] == "0"
+    assert values["max_train_steps"] == "0"
+    assert values["max_eval_steps"] == "0"
+    assert values["max_test_steps"] == "0"
+    assert values["train_steps"] == "0"
+    assert values["val_steps"] == "0"
+    assert values["test_steps"] == "2"
+    assert values["model_id"] == "thuml/sundial-base-128m"
+    assert values["model_revision"] == "3212e42564493f520593e5414af4367fc4b49226"
     assert values["output_dir"] == str(args.output_dir.resolve())
     assert values["best_sha256"] == hashlib.sha256(result["checkpoint"].read_bytes()).hexdigest()
     assert values["predictions_sha256"] == hashlib.sha256(result["predictions"].read_bytes()).hexdigest()
