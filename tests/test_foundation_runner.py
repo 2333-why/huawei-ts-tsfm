@@ -985,6 +985,74 @@ def test_default_output_cleanup_happens_before_alias_conflict(monkeypatch, tmp_p
     assert not completion.exists()
 
 
+@pytest.mark.parametrize(
+    ("canonical_dataset", "alias_dataset"),
+    [
+        ("skippd_luoyang", "pvod_station00_ylj"),
+        ("pvod_station00_ylj", "skippd_luoyang"),
+    ],
+)
+def test_alias_conflict_cleans_every_default_output_candidate(
+    monkeypatch, tmp_path, canonical_dataset, alias_dataset
+):
+    import run
+
+    module = _install_fakes(monkeypatch, tmp_path)
+    config = tmp_path / "config.json"
+    results_root = tmp_path / "default-results"
+    config.write_text(json.dumps({"paths": {"results_root": str(results_root)}}), encoding="utf-8")
+    outputs = []
+    for dataset in (canonical_dataset, alias_dataset):
+        output = results_root / "foundation_models" / dataset / "Sundial" / "zero_shot"
+        output.mkdir(parents=True)
+        completion = output / "completion.tsv"
+        completion.write_text("stale\n", encoding="utf-8")
+        outputs.append(completion)
+    args = _args(
+        module,
+        tmp_path,
+        mode="zero_shot",
+        config=config,
+        output_dir=None,
+        dataset=canonical_dataset,
+        data=alias_dataset,
+    )
+
+    with pytest.raises(ValueError, match="conflicting"):
+        module.run(args)
+    assert all(not completion.exists() for completion in outputs)
+
+
+def test_cli_parse_failure_cleans_explicit_output_completion(monkeypatch, tmp_path):
+    import run
+
+    output = tmp_path / "cli-output"
+    output.mkdir()
+    completion = output / "completion.tsv"
+    completion.write_text("stale\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        run.main(
+            [
+                "--dataset",
+                "skippd_luoyang",
+                "--model",
+                "Sundial",
+                "--mode",
+                "zero_shot",
+                "--seq_len",
+                "2",
+                "--pred_len",
+                "1",
+                "--output_dir",
+                str(output),
+                "--debug",
+                "yes",
+            ]
+        )
+    assert not completion.exists()
+
+
 def test_requested_model_id_is_metadata_only_and_pinned_loader_identity_survives(monkeypatch, tmp_path):
     import run
 

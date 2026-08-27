@@ -98,16 +98,73 @@ _MODEL_PYTHON_FLOORS = {
     "TiRex": "3.10",
     "TimesFM": "3.10",
 }
+_MODEL_PACKAGE_DESCRIPTORS = {
+    "Sundial": {
+        "distribution": None,
+        "export": None,
+        "specifier": None,
+        "label": "-",
+    },
+    "TimeMoE": {
+        "distribution": None,
+        "export": None,
+        "specifier": None,
+        "label": "-",
+    },
+    "Chronos2": {
+        "distribution": "chronos-forecasting",
+        "export": "chronos/Chronos2Pipeline",
+        "specifier": ">=2,<3",
+        "label": "chronos-forecasting (chronos/Chronos2Pipeline)",
+    },
+    "TiRex": {
+        "distribution": "tirex-ts",
+        "export": "tirex/load_model",
+        "specifier": ">=1,<2",
+        "label": "tirex-ts (tirex/load_model)",
+    },
+    "TimesFM": {
+        "distribution": "transformers",
+        "export": "transformers/TimesFm2_5ModelForPrediction",
+        "specifier": ">=5.3,<6",
+        "label": "transformers (TimesFm2_5ModelForPrediction)",
+    },
+}
+_MODEL_DESCRIPTORS = {
+    model_name: {
+        "required_cache_files": _REQUIRED_CACHE_FILES[model_name],
+        "python_floor": _MODEL_PYTHON_FLOORS[model_name],
+        "package": _MODEL_PACKAGE_DESCRIPTORS[model_name],
+    }
+    for model_name in MODEL_NAMES
+}
 _MODERN_MODEL_PACKAGES = {
-    "Chronos2": "chronos-forecasting (chronos/Chronos2Pipeline)",
-    "TiRex": "tirex-ts (tirex/load_model)",
-    "TimesFM": "transformers (TimesFm2_5ModelForPrediction)",
+    model_name: descriptor["label"]
+    for model_name, descriptor in _MODEL_PACKAGE_DESCRIPTORS.items()
+    if descriptor["distribution"] is not None
 }
 _MODERN_MODEL_PACKAGE_SPECS = {
-    "Chronos2": ("chronos-forecasting", ">=2,<3"),
-    "TiRex": ("tirex-ts", ">=1,<2"),
-    "TimesFM": ("transformers", ">=5.3,<6"),
+    model_name: (descriptor["distribution"], descriptor["specifier"])
+    for model_name, descriptor in _MODEL_PACKAGE_DESCRIPTORS.items()
+    if descriptor["distribution"] is not None
 }
+
+
+def _validate_model_descriptors() -> None:
+    """Fail closed when model capability metadata drifts from the registry."""
+
+    expected = tuple(MODEL_NAMES)
+    mappings = (
+        ("required cache files", _REQUIRED_CACHE_FILES),
+        ("Python floors", _MODEL_PYTHON_FLOORS),
+        ("package descriptors", _MODEL_PACKAGE_DESCRIPTORS),
+        ("model descriptors", _MODEL_DESCRIPTORS),
+    )
+    for label, mapping in mappings:
+        if tuple(mapping.keys()) != expected:
+            raise RuntimeError(
+                "foundation model descriptor mappings do not match model registry ({})".format(label)
+            )
 
 
 def _runtime_python_version() -> str:
@@ -698,10 +755,11 @@ def _package_specs_for_python(python_version: str) -> Tuple[Tuple[str, str, str]
 def _model_package_report(model_name: str, package_items: Sequence[Mapping[str, Any]]) -> Tuple[str, str, Optional[str]]:
     """Check optional distributions through metadata only, never importing them."""
 
-    package_spec = _MODERN_MODEL_PACKAGE_SPECS.get(model_name)
-    if package_spec is None:
+    package_descriptor = _MODEL_PACKAGE_DESCRIPTORS[model_name]
+    distribution_name = package_descriptor["distribution"]
+    version_specifier = package_descriptor["specifier"]
+    if distribution_name is None or version_specifier is None:
         return "pass", "-", None
-    distribution_name, version_specifier = package_spec
     if distribution_name == "transformers":
         version = next(
             (
@@ -734,6 +792,7 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
     if not math.isfinite(timeout) or timeout <= 0 or timeout > MAX_NETWORK_TIMEOUT:
         raise ValueError("network_timeout must be positive and at most 10 seconds")
 
+    _validate_model_descriptors()
     interpreter = _interpreter_report()
     runtime_python = _runtime_python_version()
     package_specs = _package_specs_for_python(runtime_python)
@@ -769,8 +828,9 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
     models: List[Dict[str, Any]] = []
     for model_name in MODEL_NAMES:
         spec = get_model_spec(model_name)
-        required_files = _REQUIRED_CACHE_FILES.get(model_name, ("config.json",))
-        python_floor = _MODEL_PYTHON_FLOORS.get(model_name, EXPECTED_PYTHON)
+        descriptor = _MODEL_DESCRIPTORS[model_name]
+        required_files = descriptor["required_cache_files"]
+        python_floor = descriptor["python_floor"]
         python_blocked = not _python_version_at_least(runtime_python, python_floor)
         package_status, package_name, package_version = _model_package_report(model_name, packages)
         try:
@@ -805,7 +865,7 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
                 "requires Python >={} and package {} ({}); current Python {}"
                 .format(
                     python_floor,
-                    _MODERN_MODEL_PACKAGES.get(model_name, package_name),
+                    descriptor["package"]["label"],
                     package_status,
                     runtime_python,
                 )

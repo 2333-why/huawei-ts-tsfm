@@ -14,6 +14,7 @@ import json
 import math
 import os
 import random
+import sys
 import tempfile
 from dataclasses import asdict, is_dataclass
 from datetime import timedelta
@@ -1017,35 +1018,112 @@ def _resolve_output_dir(args: Any) -> Path:
     return output_dir
 
 
-def _pre_normalization_output_dir(args: Any) -> Optional[Path]:
-    """Clear a resolvable default output before alias conflict validation."""
+def _default_output_dir(dataset: str, model: str, mode: str, config_value: Any) -> Path:
+    """Resolve one default output identity without mutating the filesystem."""
+
+    config_path = Path(config_value) if config_value is not None else DEFAULT_CONFIGS[dataset]
+    config = _read_config(config_path)
+    try:
+        root = Path(config["paths"]["results_root"])
+    except (KeyError, TypeError) as exc:
+        raise ValueError("dataset config must define paths.results_root") from exc
+    if not root.is_absolute():
+        root = root.resolve()
+    return (root / "foundation_models" / dataset / model / mode).resolve()
+
+
+def _pre_normalization_output_dirs(args: Any) -> List[Path]:
+    """Clear every resolvable output identity before alias validation."""
 
     if getattr(args, "output_dir", None) is not None:
         output_dir = Path(args.output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         _remove_completion(output_dir)
-        return output_dir
+        return [output_dir]
 
-    dataset = getattr(args, "dataset", None)
-    if dataset is None:
-        dataset = getattr(args, "data", None)
+    datasets: List[str] = []
+    for name in ("dataset", "data"):
+        value = getattr(args, name, None)
+        if value in DATASET_LOADERS and value not in datasets:
+            datasets.append(value)
     model = getattr(args, "model", None)
     mode = getattr(args, "mode", None)
-    if dataset not in DATASET_LOADERS or model not in MODEL_NAMES or mode not in RUN_MODES:
-        return None
+    if model not in MODEL_NAMES or mode not in RUN_MODES:
+        return []
     config_value = getattr(args, "config", None)
-    config_path = Path(config_value) if config_value is not None else DEFAULT_CONFIGS[dataset]
-    try:
-        config = _read_config(config_path)
-        root = Path(config["paths"]["results_root"])
-        if not root.is_absolute():
-            root = root.resolve()
-        output_dir = (root / "foundation_models" / dataset / model / mode).resolve()
+    candidates: List[Path] = []
+    for dataset in datasets:
+        try:
+            output_dir = _default_output_dir(dataset, model, mode, config_value)
+        except Exception:
+            continue
         output_dir.mkdir(parents=True, exist_ok=True)
         _remove_completion(output_dir)
-        return output_dir
-    except Exception:
-        return None
+        candidates.append(output_dir)
+    return candidates
+
+
+def _pre_normalization_output_dir(args: Any) -> Optional[Path]:
+    """Backward-compatible first-candidate view of pre-normalization cleanup."""
+
+    candidates = _pre_normalization_output_dirs(args)
+    return candidates[0] if candidates else None
+
+
+def _raw_cli_option_values(argv: Sequence[str], option: str) -> List[str]:
+    """Extract plainly resolvable values without reproducing argparse."""
+
+    values: List[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == option and index + 1 < len(argv):
+            value = argv[index + 1]
+            if not value.startswith("--"):
+                values.append(value)
+            index += 2
+            continue
+        prefix = option + "="
+        if token.startswith(prefix):
+            value = token[len(prefix) :]
+            if value:
+                values.append(value)
+        index += 1
+    return values
+
+
+def _cleanup_raw_cli_candidates(argv: Sequence[str]) -> None:
+    """Remove stale markers before argparse can reject a malformed command."""
+
+    for raw_output in _raw_cli_option_values(argv, "--output_dir"):
+        try:
+            output_dir = Path(raw_output).resolve()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            _remove_completion(output_dir)
+        except Exception:
+            continue
+
+    model_values = _raw_cli_option_values(argv, "--model")
+    mode_values = _raw_cli_option_values(argv, "--mode")
+    if not model_values or not mode_values:
+        return
+    model = model_values[-1]
+    mode = mode_values[-1]
+    if model not in MODEL_NAMES or mode not in RUN_MODES:
+        return
+    config_values = _raw_cli_option_values(argv, "--config")
+    config_value = config_values[-1] if config_values else None
+    seen = set()
+    for dataset in _raw_cli_option_values(argv, "--dataset") + _raw_cli_option_values(argv, "--data"):
+        if dataset in seen or dataset not in DATASET_LOADERS:
+            continue
+        seen.add(dataset)
+        try:
+            output_dir = _default_output_dir(dataset, model, mode, config_value)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            _remove_completion(output_dir)
+        except Exception:
+            continue
 
 
 def _write_completion_manifest(
@@ -1102,11 +1180,13 @@ def run(args: Any) -> Dict[str, Path]:
     """Run one experiment and return only its four final artifact paths."""
 
     output_dir: Optional[Path] = None
+    cleanup_candidates: List[Path] = []
     try:
         # Clear an explicitly supplied output before alias normalization.  An
         # alias conflict is still an early failure and must not leave a stale
         # completion marker behind.
-        output_dir = _pre_normalization_output_dir(args)
+        cleanup_candidates = _pre_normalization_output_dirs(args)
+        output_dir = cleanup_candidates[0] if cleanup_candidates else None
         _normalize_args(args)
         if output_dir is None and (
             getattr(args, "dataset", None) in DATASET_LOADERS
@@ -1357,7 +1437,9 @@ def run(args: Any) -> Dict[str, Path]:
             "completion": completion_path,
         }
     except Exception:
-        if output_dir is not None:
+        for candidate in cleanup_candidates:
+            _remove_completion(candidate)
+        if output_dir is not None and output_dir not in cleanup_candidates:
             _remove_completion(output_dir)
         raise
 
@@ -1415,7 +1497,9 @@ def _argparse_is_training_value(value: str) -> bool:
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    _cleanup_raw_cli_candidates(raw_argv)
+    args = parser.parse_args(raw_argv)
     if args.list_models or args.list_modes:
         return args
     try:

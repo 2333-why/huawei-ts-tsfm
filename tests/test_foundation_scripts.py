@@ -246,7 +246,8 @@ def _copied_default_harness(tmp_path: Path):
     )
     env.pop("OUTPUT_ROOT", None)
     env.pop("SUMMARY_PATH", None)
-    return copied_repo, env
+    output_root = copied_repo / "results_foundation_models_smoke"
+    return copied_repo, env, output_root, record
 
 
 def _events(record: Path):
@@ -473,30 +474,28 @@ def test_dataset_content_change_retries_only_affected_tasks(tmp_path):
 
 
 def test_effective_config_change_retries_only_affected_tasks(tmp_path):
-    repo, env, _output_root, record = _harness(tmp_path)
+    repo, env, _output_root, record = _copied_default_harness(tmp_path)
     assert subprocess.run(
         ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
         cwd=repo, env=env, text=True, capture_output=True, timeout=30,
     ).returncode == 0
     before = len([event for event in _events(record) if event["kind"] == "run"])
     config = repo / "configs" / "datasets" / "pvod_station00_ylj.yaml"
-    original = config.read_text(encoding="utf-8")
-    config.write_text(original + "fingerprint_only: changed\n", encoding="utf-8")
-    try:
-        env.update(RESUME="1")
-        result = subprocess.run(
-            ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
-            cwd=repo, env=env, text=True, capture_output=True, timeout=30,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        rerun = [event for event in _events(record) if event["kind"] == "run"][before:]
-        assert len(rerun) == sum(task.dataset == "pvod_station00_ylj" for task in TASKS) and {event["dataset"] for event in rerun} == {"pvod_station00_ylj"}
-    finally:
-        config.write_text(original, encoding="utf-8")
+    original = json.loads(config.read_text(encoding="utf-8"))
+    original["fingerprint_only"] = "changed"
+    config.write_text(json.dumps(original), encoding="utf-8")
+    env.update(RESUME="1")
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    rerun = [event for event in _events(record) if event["kind"] == "run"][before:]
+    assert len(rerun) == sum(task.dataset == "pvod_station00_ylj" for task in TASKS) and {event["dataset"] for event in rerun} == {"pvod_station00_ylj"}
 
 
 def test_registry_revision_change_retries_only_affected_model(tmp_path):
-    repo, env, _output_root, record = _harness(tmp_path)
+    repo, env, _output_root, record = _copied_default_harness(tmp_path)
     assert subprocess.run(
         ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
         cwd=repo, env=env, text=True, capture_output=True, timeout=30,
@@ -509,21 +508,18 @@ def test_registry_revision_change_retries_only_affected_model(tmp_path):
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     registry.write_text(changed, encoding="utf-8")
-    try:
-        env.update(RESUME="1")
-        result = subprocess.run(
-            ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
-            cwd=repo, env=env, text=True, capture_output=True, timeout=30,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        rerun = [event for event in _events(record) if event["kind"] == "run"][before:]
-        assert len(rerun) == sum(task.model == "Sundial" for task in TASKS) and {event["model"] for event in rerun} == {"Sundial"}
-    finally:
-        registry.write_text(original, encoding="utf-8")
+    env.update(RESUME="1")
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    rerun = [event for event in _events(record) if event["kind"] == "run"][before:]
+    assert len(rerun) == sum(task.model == "Sundial" for task in TASKS) and {event["model"] for event in rerun} == {"Sundial"}
 
 
 def test_unset_output_and_summary_paths_use_smoke_defaults_in_isolated_repo(tmp_path):
-    repo, env = _copied_default_harness(tmp_path)
+    repo, env, _output_root, _record = _copied_default_harness(tmp_path)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
         cwd=repo, env=env, text=True, capture_output=True, timeout=30,

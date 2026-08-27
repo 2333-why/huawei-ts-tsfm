@@ -526,6 +526,25 @@ def test_required_cache_files_and_registry_pins_are_exact(environment_module):
 
 
 @pytest.mark.parametrize(
+    "mapping_name",
+    ["_REQUIRED_CACHE_FILES", "_MODEL_PYTHON_FLOORS", "_MODEL_PACKAGE_DESCRIPTORS", "_MODEL_DESCRIPTORS"],
+)
+@pytest.mark.parametrize("drift", ["missing", "extra"])
+def test_descriptor_mapping_drift_fails_closed(environment_module, monkeypatch, mapping_name, drift):
+    module = environment_module
+    original = getattr(module, mapping_name)
+    broken = dict(original)
+    if drift == "missing":
+        broken.pop(module.MODEL_NAMES[-1])
+    else:
+        broken["UnexpectedModel"] = next(iter(original.values()))
+    monkeypatch.setattr(module, mapping_name, broken)
+
+    with pytest.raises(RuntimeError, match="descriptor"):
+        module.collect_environment(offline=True)
+
+
+@pytest.mark.parametrize(
     "cuda_report",
     [
         {"status": "fail", "available": False, "device_count": 0, "devices": []},
