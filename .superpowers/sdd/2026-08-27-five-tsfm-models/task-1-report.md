@@ -77,3 +77,31 @@ Additional verification:
 
 - No real checkpoint/GPU smoke was run; this environment does not provide the required downloaded model weights, so verification uses the existing complete fake-model contracts.
 - The retained foundation shell batch script still intentionally validates the existing two-model/32-task matrix because Task 1 was instructed not to change runner CLI or batch counts; later model-matrix work must update those counts from registry capabilities.
+
+## Fix round 1 — isolated checkout fixture
+
+Reviewer finding: the isolated default-path fixture had been narrowed to an
+allowlist, which removed representative repository surface unrelated to the
+import migration. The fixture now restores the original complete-tree
+`shutil.copytree` and retains the existing `.git`, `__pycache__`, and `*.pyc`
+filters, with only the root-level workspace `codex` special entry additionally
+ignored. No production or shell-script behavior was changed.
+
+Covering command:
+
+```text
+/opt/data/private/penv/time/bin/python -m pytest -q tests/test_foundation_scripts.py::test_unset_output_and_summary_paths_use_smoke_defaults_in_isolated_repo
+```
+
+Exact output:
+
+```text
+.                                                                        [100%]
+1 passed in 2.93s
+```
+
+Self-review: the fixture again copies the full checkout, so root-level files,
+retained model files, configs, scripts, and any future integration dependency
+are represented; only the known non-regular `codex` entry is excluded at the
+workspace root. User files remain unstaged. Remaining concern is unchanged:
+real model weights/GPU smoke is unavailable in this environment.

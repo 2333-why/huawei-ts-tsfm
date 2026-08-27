@@ -217,25 +217,15 @@ def _harness(tmp_path: Path):
 def _copied_default_harness(tmp_path: Path):
     source_repo = Path(__file__).resolve().parents[1]
     copied_repo = tmp_path / "copied repo"
-    copied_repo.mkdir()
-    for relative in (
-        "models",
-        "configs",
-        "run_foundation_model.py",
-        "scripts/run_all_foundation_models_2gpu.sh",
-        "scripts/smoke_all_foundation_models_2gpu.sh",
-    ):
-        source = source_repo / relative
-        destination = copied_repo / relative
-        if source.is_dir():
-            shutil.copytree(
-                source,
-                destination,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-            )
-        else:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+    inherited_ignore = shutil.ignore_patterns(".git", "__pycache__", "*.pyc")
+
+    def ignore_checkout_entry(directory, names):
+        ignored = set(inherited_ignore(directory, names))
+        if Path(directory).resolve() == source_repo.resolve():
+            ignored.add("codex")
+        return ignored
+
+    shutil.copytree(source_repo, copied_repo, ignore=ignore_checkout_entry)
     fake = _fake_python(tmp_path, copied_repo)
     skippd = tmp_path / "default-skippd.parquet"
     pvod = tmp_path / "default-pvod.parquet"
