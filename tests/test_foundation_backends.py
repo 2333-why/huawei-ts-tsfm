@@ -126,6 +126,7 @@ class _FakeLoadedModel:
         self.to_devices = []
         self.eval_calls = 0
         self.generate_calls = []
+        self.native_calls = []
 
     def to(self, device):
         self.to_devices.append(device)
@@ -138,6 +139,15 @@ class _FakeLoadedModel:
     def generate(self, values, **kwargs):
         self.generate_calls.append((values.detach().clone(), kwargs))
         return self._generate(values, kwargs)
+
+    def __call__(self, **kwargs):
+        self.native_calls.append(
+            {
+                key: value.detach().clone() if torch.is_tensor(value) else value
+                for key, value in kwargs.items()
+            }
+        )
+        return types.SimpleNamespace(logits=self._generate(kwargs["input_ids"], kwargs))
 
 
 def _install_fake_transformers(monkeypatch, model):
@@ -159,7 +169,7 @@ def test_sundial_backend_loads_pinned_revision_moves_model_and_denormalizes(monk
     history = torch.tensor([[[1.0], [3.0], [5.0]]], requires_grad=True)
     loaded = _FakeLoadedModel(
         lambda values, kwargs: torch.full(
-            (values.shape[0], 20, kwargs["max_new_tokens"]), 2.0
+            (values.shape[0], 20, kwargs["max_output_length"]), 2.0
         )
     )
     loader_calls = _install_fake_transformers(monkeypatch, loaded)
@@ -179,19 +189,118 @@ def test_sundial_backend_loads_pinned_revision_moves_model_and_denormalizes(monk
     ]
     assert loaded.to_devices == ["cpu"]
     assert loaded.eval_calls == 1
-    generated_values, generated_kwargs = loaded.generate_calls[0]
+    native_call = loaded.native_calls[0]
     expected_scale = math.sqrt(8.0 / 3.0 + 1e-5)
     expected_input = torch.tensor(
         [[-2.0 / expected_scale, 0.0, 2.0 / expected_scale]]
     )
-    assert torch.allclose(generated_values, expected_input)
-    assert generated_values.shape == (1, 3)
-    assert generated_kwargs == {"max_new_tokens": 2, "num_samples": 20}
+    assert torch.allclose(native_call["input_ids"], expected_input)
+    assert native_call["input_ids"].shape == (1, 3)
+    assert {
+        key: value for key, value in native_call.items() if key != "input_ids"
+    } == {
+        "max_output_length": 2,
+        "num_samples": 20,
+        "use_cache": False,
+        "return_dict": True,
+        "revin": False,
+    }
     assert output.shape == (1, 2, 1)
     assert not output.requires_grad
     assert torch.allclose(
         output,
         torch.full((1, 2, 1), 3.0 + 2.0 * expected_scale),
+    )
+
+
+def test_sundial_backend_uses_native_forward_when_generate_cache_api_is_incompatible(monkeypatch):
+    class _SundialCompatLoadedModel:
+        def __init__(self):
+            self.to_devices = []
+            self.eval_calls = 0
+            self.generate_calls = []
+            self.native_calls = []
+
+        def to(self, device):
+            self.to_devices.append(device)
+            return self
+
+        def eval(self):
+            self.eval_calls += 1
+            return self
+
+        def generate(self, *args, **kwargs):
+            self.generate_calls.append((args, kwargs))
+            raise AttributeError("'DynamicCache' object has no attribute 'seen_tokens'")
+
+        def __call__(self, **kwargs):
+            self.native_calls.append(
+                {
+                    key: value.detach().clone() if torch.is_tensor(value) else value
+                    for key, value in kwargs.items()
+                }
+            )
+            input_ids = kwargs["input_ids"]
+            horizon = kwargs["max_output_length"]
+            return types.SimpleNamespace(
+                logits=torch.full((input_ids.shape[0], 20, horizon), 2.0)
+            )
+
+    history = torch.tensor(
+        [[[1.0], [3.0], [5.0]], [[2.0], [4.0], [6.0]]],
+        requires_grad=True,
+    )
+    loaded = _SundialCompatLoadedModel()
+    loader_calls = _install_fake_transformers(monkeypatch, loaded)
+
+    from models.factory import build_backend
+    from models.registry import get_model_spec
+
+    backend = build_backend("Sundial", "cpu")
+    output = backend.predict(history, pred_len=2)
+    spec = get_model_spec("Sundial")
+
+    assert loader_calls == [
+        (
+            spec.model_id,
+            {"revision": spec.revision, "trust_remote_code": True},
+        )
+    ]
+    assert loaded.to_devices == ["cpu"]
+    assert loaded.eval_calls == 1
+    assert loaded.generate_calls == []
+    assert len(loaded.native_calls) == 1
+    native_call = loaded.native_calls[0]
+    expected_scale = math.sqrt(8.0 / 3.0 + 1e-5)
+    expected_input = torch.tensor(
+        [
+            [-2.0 / expected_scale, 0.0, 2.0 / expected_scale],
+            [-2.0 / expected_scale, 0.0, 2.0 / expected_scale],
+        ]
+    )
+    assert torch.allclose(native_call["input_ids"], expected_input)
+    assert native_call["input_ids"].shape == (2, 3)
+    assert {
+        key: value
+        for key, value in native_call.items()
+        if key != "input_ids"
+    } == {
+        "max_output_length": 2,
+        "num_samples": 20,
+        "use_cache": False,
+        "return_dict": True,
+        "revin": False,
+    }
+    assert output.shape == (2, 2, 1)
+    assert torch.isfinite(output).all()
+    assert torch.allclose(
+        output,
+        torch.tensor(
+            [
+                [[3.0 + 2.0 * expected_scale], [3.0 + 2.0 * expected_scale]],
+                [[4.0 + 2.0 * expected_scale], [4.0 + 2.0 * expected_scale]],
+            ]
+        ),
     )
 
 

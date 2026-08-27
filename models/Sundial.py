@@ -24,13 +24,15 @@ class SundialBackend(_GenerateBackend):
             history, pred_len, (normalized, means, stdev) = self._inputs(
                 history, pred_len
             )
-            output = _generated_tensor(
-                self.model.generate(
-                    normalized[..., 0],
-                    max_new_tokens=pred_len,
-                    num_samples=20,
-                )
+            native = self.model(
+                input_ids=normalized[..., 0],
+                max_output_length=pred_len,
+                num_samples=20,
+                use_cache=False,
+                return_dict=True,
+                revin=False,
             )
+            output = _generated_tensor(native.logits)
             if output.ndim < 2:
                 raise ValueError(
                     "Sundial model.generate output must include a sample axis"
