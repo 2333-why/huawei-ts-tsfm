@@ -20,7 +20,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import timedelta
 from itertools import islice
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -1445,7 +1445,7 @@ def run(args: Any) -> Dict[str, Path]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--dataset", choices=sorted(DATASET_LOADERS), default=argparse.SUPPRESS)
     parser.add_argument("--data", dest="data", default=argparse.SUPPRESS)
     parser.add_argument("--model", choices=list(MODEL_NAMES))
@@ -1498,7 +1498,8 @@ def _argparse_is_training_value(value: str) -> bool:
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser = build_parser()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    _cleanup_raw_cli_candidates(raw_argv)
+    if not {"-h", "--help", "--list-models", "--list-modes"}.intersection(raw_argv):
+        _cleanup_raw_cli_candidates(raw_argv)
     args = parser.parse_args(raw_argv)
     if args.list_models or args.list_modes:
         return args

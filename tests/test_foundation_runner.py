@@ -1053,6 +1053,54 @@ def test_cli_parse_failure_cleans_explicit_output_completion(monkeypatch, tmp_pa
     assert not completion.exists()
 
 
+def test_abbreviated_output_option_is_rejected_without_cleanup(tmp_path):
+    import run
+
+    output = tmp_path / "abbreviated-output"
+    output.mkdir()
+    completion = output / "completion.tsv"
+    completion.write_text("stale\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        run.parse_args(
+            [
+                "--dataset",
+                "skippd_luoyang",
+                "--model",
+                "Sundial",
+                "--mode",
+                "zero_shot",
+                "--seq_len",
+                "2",
+                "--pred_len",
+                "1",
+                "--output_d",
+                str(output),
+            ]
+        )
+    assert completion.exists()
+
+
+@pytest.mark.parametrize("catalog_flag", ["-h", "--help", "--list-models", "--list-modes"])
+def test_help_and_catalog_invocations_preserve_stale_completion(tmp_path, catalog_flag, capsys):
+    import run
+
+    output = tmp_path / "catalog-output"
+    output.mkdir()
+    completion = output / "completion.tsv"
+    completion.write_text("stale\n", encoding="utf-8")
+
+    invocation = [catalog_flag, "--output_dir", str(output)]
+    if catalog_flag in {"-h", "--help"}:
+        with pytest.raises(SystemExit) as error:
+            run.main(invocation)
+        assert error.value.code == 0
+    else:
+        assert run.main(invocation) == 0
+    capsys.readouterr()
+    assert completion.exists()
+
+
 def test_requested_model_id_is_metadata_only_and_pinned_loader_identity_survives(monkeypatch, tmp_path):
     import run
 
