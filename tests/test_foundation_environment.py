@@ -1227,14 +1227,37 @@ def test_modern_python_selects_modern_base_dependency_profile(
     versions = {
         "torch": "2.4.1",
         "transformers": "5.3.0",
-        "peft": "0.14.0",
+        "peft": "0.18.1",
     }
     monkeypatch.setattr(module, "_package_version", lambda name: versions[name])
 
     report = module.collect_environment(offline=True)
 
     assert [item["expected"] for item in report["packages"]] == [
-        ">=2.4,<3", ">=5.3,<6", ">=0.13.2,<1"
+        ">=2.4,<3", ">=5.3,<6", ">=0.18.1,<1"
     ]
     assert [item["status"] for item in report["packages"]] == ["pass", "pass", "pass"]
     assert report["interpreter"]["status"] == "pass"
+
+
+def test_modern_peft_floor_rejects_legacy_release_on_modern_python(
+    environment_module, monkeypatch, tmp_path
+):
+    module = environment_module
+    _install_happy_fakes(monkeypatch, module, tmp_path)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.11.0")
+    monkeypatch.setattr(module.sys, "executable", module.EXPECTED_INTERPRETER)
+    versions = {
+        "torch": "2.4.1",
+        "transformers": "5.3.0",
+        "peft": "0.18.0",
+    }
+    monkeypatch.setattr(module, "_package_version", lambda name: versions[name])
+
+    report = module.collect_environment(offline=True)
+
+    peft = next(item for item in report["packages"] if item["name"] == "peft")
+    assert peft["expected"] == ">=0.18.1,<1"
+    assert peft["status"] == "fail"
+    assert peft["version_status"] == "fail"
+    assert report["ok"] is False

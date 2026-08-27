@@ -46,7 +46,7 @@ LEGACY_PACKAGE_SPECS: Tuple[Tuple[str, str, str], ...] = (
 MODERN_PACKAGE_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("torch", "torch", ">=2.4,<3"),
     ("transformers", "transformers", ">=5.3,<6"),
-    ("peft", "peft", ">=0.13.2,<1"),
+    ("peft", "peft", ">=0.18.1,<1"),
 )
 PACKAGE_SPECS = LEGACY_PACKAGE_SPECS
 

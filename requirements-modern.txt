@@ -1,0 +1,9 @@
+numpy>=1.24,<2
+pandas>=2,<3
+pyarrow>=10
+PyYAML>=6,<7
+torch>=2.4,<3; python_version >= "3.10"
+transformers>=5.3,<6; python_version >= "3.10"
+peft>=0.18.1,<1; python_version >= "3.10"
+chronos-forecasting>=2,<3; python_version >= "3.10"
+tirex-ts>=1,<2; python_version >= "3.10"
