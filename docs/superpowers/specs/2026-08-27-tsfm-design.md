@@ -2,15 +2,14 @@
 
 ## 目标与范围
 
-在 `tsfm` 分支和 `/opt/data/private/code/tsfm-ts` 工作区中，为现有纯功率时序框架增加可审计的时序基础模型实验链路。链路覆盖三个模型、两个数据集、两个预测任务和四种运行模式，同时复用现有数据边界、预测 CSV、原功率单位指标与完成清单。
+在 `tsfm` 分支和 `/opt/data/private/code/tsfm-ts` 工作区中，为现有纯功率时序框架增加可审计的时序基础模型实验链路。链路覆盖两个模型、两个数据集、两个预测任务和四种运行模式，同时复用现有数据边界、预测 CSV、原功率单位指标与完成清单。
 
 本轮主模型目录固定为：
 
-- `Chronos2`：`amazon/chronos-2`；
-- `Sundial`：`thuml/sundial-base-128m`；
-- `TimeMoE`：`Maple728/TimeMoE-50M`。
+- `Sundial`：`thuml/sundial-base-128m`，revision `3212e42564493f520593e5414af4367fc4b49226`；
+- `TimeMoE`：`Maple728/TimeMoE-50M`，revision `446753ee48ff3726d0606a81d0092d54acee995e`。
 
-选择这三个模型，是因为它们既存在于 `/opt/data/private/code/Time-Series-Library` 的基础模型目录中，又能暴露真实 PyTorch 参数和训练损失。`TiRex` 官方只提供 zero-shot 推理、不开放用户微调；`TimesFM 2.5` 当前可训练 Transformers 端要求的版本与指定环境中 TimeMoE/Sundial 的远程代码不兼容；旧 `Chronos` 与 Chronos-2 属于同一模型族。因此它们不进入本轮四模式主矩阵，代码也不得把冻结黑盒或外部校准器称为“全量微调”。
+选择这两个模型，是因为它们既存在于 `/opt/data/private/code/Time-Series-Library` 的基础模型目录中，又能通过指定环境已有的 Transformers 4.46.2 与 PEFT 0.13.2 暴露真实 PyTorch 参数和原生训练损失。`TiRex` 官方只提供 zero-shot 推理、不开放用户微调；`TimesFM 2.5` 当前可训练 Transformers 端要求 Python 3.10+；当前 `chronos-forecasting` 同样要求 Python 3.10+，与指定解释器 Python 3.8.18 冲突。因此 TiRex、TimesFM、Chronos/Chronos-2 不进入本轮四模式主矩阵，代码也不得把冻结黑盒或外部校准器称为“全量微调”。
 
 ## 明确解释
 
@@ -28,7 +27,7 @@
 
 `full` 解冻基础模型全部可学习参数，按模型原生训练损失更新。可训练参数必须等于模型全部参数；否则运行失败。
 
-`last_layer` 冻结基础模型，只解冻后端明确声明的预测输出模块：Chronos-2 的输出 patch/projection head、Sundial 的 `flow_loss` 预测头、TimeMoE 的输出层。必须至少有一个而非全部参数可训练；模块名匹配为空或过宽时运行失败。
+`last_layer` 冻结基础模型，只解冻后端明确声明的预测输出模块：Sundial 的 `flow_loss` 预测头、TimeMoE 的输出层。必须至少有一个而非全部参数可训练；模块名匹配为空或过宽时运行失败。
 
 每个 checkpoint 和 `metrics.json` 都记录：运行模式、模型 ID、模型 revision、总参数数、可训练参数数、可训练参数名摘要、训练/验证/测试步数。训练模式不能通过仅训练一个新建的通用回归头来冒充基础模型微调。
 
@@ -85,7 +84,7 @@ Parquet + dataset config
 | `seq96_h4` | `skippd_luoyang` | 96 | 48 |
 | `seq96_h4` | `pvod_station00_ylj` | 96 | 16 |
 
-三个模型 × 四个任务 × 四种模式，共 48 个唯一实验。`scripts/run_all_foundation_models_2gpu.sh` 启动两条 GPU 队列，每张卡顺序执行 24 个任务；同一物理 GPU 上不得并发两个模型。子进程设置 `CUDA_VISIBLE_DEVICES=<physical>`，内部统一传 `--device cuda:0`。
+两个模型 × 四个任务 × 四种模式，共 32 个唯一实验。`scripts/run_all_foundation_models_2gpu.sh` 启动两条 GPU 队列，每张卡顺序执行 16 个任务；同一物理 GPU 上不得并发两个模型。子进程设置 `CUDA_VISIBLE_DEVICES=<physical>`，内部统一传 `--device cuda:0`。
 
 脚本支持 `SMOKE=1`、`RESUME=1`、`GPUS="0 1"`、`OUTPUT_ROOT`、两个 Parquet 覆盖变量。恢复只接受身份、模式、模型 revision、数据指纹、阶段步数和产物哈希全部匹配的任务。
 
@@ -106,7 +105,7 @@ Parquet + dataset config
 
 - 原仓库测试保持通过。
 - 新单元测试不下载权重，通过 fake backend 验证目录、模式、参数审计、shape、checkpoint 与指标契约。
-- 脚本测试使用 fake runner，证明恰好展开 48 个唯一任务、两张 GPU 各 24 个、任务长度映射正确、同卡无重叠且失败能够传播。
-- 指定环境能够列出三个模型和四种模式而不下载权重。
+- 脚本测试使用 fake runner，证明恰好展开 32 个唯一任务、两张 GPU 各 16 个、任务长度映射正确、同卡无重叠且失败能够传播。
+- 指定环境能够列出两个模型和四种模式而不下载权重。
 - 安装可选依赖与缓存权重后，每个后端至少完成一次真实 zero-shot 单 batch GPU smoke；三个训练模式至少用一个 batch 完成反向传播并证明预期参数发生变化、冻结参数保持不变。
-- 完整 48 项训练不是代码交付的默认验证步骤；它由批量脚本显式启动，避免在未确认训练预算时自动占用两张 GPU 数小时。
+- 完整 32 项训练不是代码交付的默认验证步骤；它由批量脚本显式启动，避免在未确认训练预算时自动占用两张 GPU 数小时。
