@@ -128,7 +128,7 @@ def test_complete_reference_environment_is_ok_and_skips_network(
 
     report = module.collect_environment()
 
-    assert report["ok"] is True
+    assert report["ok"] is False
     assert report["interpreter"]["status"] == "pass"
     assert [item["name"] for item in report["packages"]] == [
         "torch",
@@ -139,6 +139,10 @@ def test_complete_reference_environment_is_ok_and_skips_network(
     assert len(report["cuda"]["devices"]) == 2
     assert all(item["network_attempted"] is False for item in report["models"])
     assert all(item["download_required"] is False for item in report["models"])
+    assert [item["status"] for item in report["models"]] == [
+        "pass", "pass", "blocked", "blocked", "blocked"
+    ]
+    assert all(item["network_status"] == "python_blocked" for item in report["models"][2:])
     assert network_calls == []
 
 
@@ -170,7 +174,9 @@ def test_report_rendering_and_section_order_are_deterministic(
         "skippd_luoyang",
         "pvod_station00_ylj",
     ]
-    assert [item["name"] for item in first["models"]] == ["Sundial", "TimeMoE"]
+    assert [item["name"] for item in first["models"]] == [
+        "Sundial", "TimeMoE", "Chronos2", "TiRex", "TimesFM"
+    ]
     assert list(first["interpreter"]) == [
         "status",
         "expected_executable",
@@ -210,6 +216,12 @@ def test_report_rendering_and_section_order_are_deterministic(
         "network_attempted",
         "network_status",
         "download_required",
+        "python_floor",
+        "python_status",
+        "package_status",
+        "package",
+        "package_version",
+        "block_reason",
     ]
     json_lines = module.render_json(first).splitlines()
     assert json_lines[1].strip() == '"cache_root": {'
@@ -217,7 +229,7 @@ def test_report_rendering_and_section_order_are_deterministic(
     text_lines = module.render_text(first).splitlines()
     assert text_lines[:3] == [
         "foundation environment preflight",
-        "status: PASS",
+        "status: FAIL",
         "interpreter: pass executable=/opt/data/private/penv/time/bin/python python=3.8.18",
     ]
     assert text_lines.index(next(line for line in text_lines if line.startswith("cuda: "))) < text_lines.index(
@@ -245,7 +257,7 @@ def test_interpreter_and_package_mismatches_fail_cleanly(
     if change == "executable":
         monkeypatch.setattr(module.sys, "executable", "/wrong/python")
     elif change == "python":
-        monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.11.0")
+        monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.9.0")
     elif change == "torch_version":
         monkeypatch.setattr(module, "_package_version", lambda name: "2.2.0" if name == "torch" else {
             "transformers": "4.46.2",
@@ -448,7 +460,7 @@ def test_torch_cuda_build_mismatch_is_a_package_failure(
 def test_required_cache_files_and_registry_pins_are_exact(environment_module):
     module = environment_module
 
-    assert module.MODEL_NAMES == ("Sundial", "TimeMoE")
+    assert module.MODEL_NAMES == ("Sundial", "TimeMoE", "Chronos2", "TiRex", "TimesFM")
     assert module._REQUIRED_CACHE_FILES == {
         "Sundial": (
             "config.json",
@@ -467,6 +479,9 @@ def test_required_cache_files_and_registry_pins_are_exact(environment_module):
             "ts_generation_mixin.py",
             "model.safetensors",
         ),
+        "Chronos2": ("config.json", "model.safetensors"),
+        "TiRex": ("model.ckpt",),
+        "TimesFM": ("config.json", "model.safetensors"),
     }
     assert (
         module.get_model_spec("Sundial").model_id,
@@ -482,6 +497,32 @@ def test_required_cache_files_and_registry_pins_are_exact(environment_module):
         "Maple728/TimeMoE-50M",
         "446753ee48ff3726d0606a81d0092d54acee995e",
     )
+    expected = {
+        "Sundial": (
+            "thuml/sundial-base-128m",
+            "3212e42564493f520593e5414af4367fc4b49226",
+        ),
+        "TimeMoE": (
+            "Maple728/TimeMoE-50M",
+            "446753ee48ff3726d0606a81d0092d54acee995e",
+        ),
+        "Chronos2": (
+            "amazon/chronos-2",
+            "29ec3766d36d6f73f0696f85560a422f50e8498c",
+        ),
+        "TiRex": (
+            "NX-AI/TiRex",
+            "63c740922493f5fbe60b277609ec62babfba2762",
+        ),
+        "TimesFM": (
+            "google/timesfm-2.5-200m-transformers",
+            "5a9806b9b291fad9233b5249d88263f1846304d3",
+        ),
+    }
+    assert {
+        name: (module.get_model_spec(name).model_id, module.get_model_spec(name).revision)
+        for name in module.MODEL_NAMES
+    } == expected
 
 
 @pytest.mark.parametrize(
@@ -765,9 +806,11 @@ def test_cache_miss_reachable_head_passes_but_marks_download_required(
     monkeypatch.setattr(module, "_probe_pinned_metadata", reachable)
     report = module.collect_environment(network_timeout=2.5)
 
-    assert report["ok"] is True
-    assert all(item["status"] == "pass" for item in report["models"])
-    assert all(item["network_attempted"] is True for item in report["models"])
+    assert report["ok"] is False
+    assert [item["status"] for item in report["models"]] == [
+        "download_required", "download_required", "blocked", "blocked", "blocked"
+    ]
+    assert [item["network_attempted"] for item in report["models"]] == [True, True, False, False, False]
     assert all(item["download_required"] is True for item in report["models"])
     assert [call[2] for call in calls] == [2.5, 2.5]
     assert calls[0][:2] == (
@@ -810,6 +853,37 @@ def test_probe_uses_credential_free_head_and_pinned_revision(
         for argument in command
     )
     assert observed["kwargs"]["timeout"] == 3.0
+
+
+def test_tirex_probe_uses_model_ckpt_at_the_pinned_revision(
+    environment_module, monkeypatch
+):
+    module = environment_module
+    observed = {}
+
+    class Completed:
+        returncode = 0
+        stdout = "200"
+        stderr = ""
+
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/curl")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **kwargs: (observed.update(command=command, kwargs=kwargs) or Completed()),
+    )
+    result = module._probe_pinned_metadata(
+        "NX-AI/TiRex",
+        "63c740922493f5fbe60b277609ec62babfba2762",
+        3.0,
+    )
+
+    assert result == {"status": "pass", "http_status": 200}
+    assert any(
+        "/NX-AI/TiRex/resolve/63c740922493f5fbe60b277609ec62babfba2762/model.ckpt"
+        in argument
+        for argument in observed["command"]
+    )
 
 
 def test_probe_uses_bounded_curl_head_with_clean_environment(
@@ -942,8 +1016,9 @@ def test_cache_miss_network_failures_are_sanitized(
     report = module.collect_environment()
 
     assert report["ok"] is False
-    assert all(item["status"] == "fail" for item in report["models"])
-    assert all(item["network_status"] == expected for item in report["models"])
+    assert [item["status"] for item in report["models"][:2]] == ["download_required", "download_required"]
+    assert all(item["network_status"] == expected for item in report["models"][:2])
+    assert all(item["status"] == "blocked" for item in report["models"][2:])
     assert all("error" not in item for item in report["models"])
 
 
@@ -960,7 +1035,8 @@ def test_offline_cache_miss_never_calls_network(environment_module, monkeypatch,
     assert report["ok"] is False
     assert called == []
     assert all(item["network_attempted"] is False for item in report["models"])
-    assert all(item["network_status"] == "offline" for item in report["models"])
+    assert all(item["network_status"] == "offline" for item in report["models"][:2])
+    assert all(item["network_status"] == "python_blocked" for item in report["models"][2:])
 
 
 @pytest.mark.parametrize("timeout", [0, -1, 10.0001, float("nan"), float("inf")])
@@ -1018,3 +1094,128 @@ def test_cli_exit_codes_for_invalid_timeout_failed_report_and_passed_report(
     monkeypatch.setattr(module, "collect_environment", lambda **_kwargs: {"ok": True})
     assert module.main(["--json"]) == 0
     assert capsys.readouterr().err == ""
+
+
+def test_modern_models_are_python_blocked_without_optional_imports(
+    environment_module, monkeypatch, tmp_path
+):
+    module = environment_module
+    _install_happy_fakes(monkeypatch, module, tmp_path)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.8.18")
+    monkeypatch.setattr(module.sys, "executable", "/opt/data/private/penv/time/bin/python")
+    optional_modules = (
+        "chronos",
+        "tirex",
+        "models.Chronos2",
+        "models.TiRex",
+        "models.TimesFM",
+        "transformers.models.timesfm2_5",
+    )
+    for name in optional_modules:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    imported_names = []
+    original_import = module._import_package
+
+    def guarded_import(name):
+        imported_names.append(name)
+        if name in {"chronos", "tirex"}:
+            raise AssertionError("optional model package imported")
+        return original_import(name)
+
+    monkeypatch.setattr(module, "_import_package", guarded_import)
+    report = module.collect_environment(offline=True)
+
+    by_name = {item["name"]: item for item in report["models"]}
+    assert [by_name[name]["status"] for name in ("Chronos2", "TiRex", "TimesFM")] == [
+        "blocked", "blocked", "blocked"
+    ]
+    assert all(by_name[name]["python_status"] == "blocked" for name in ("Chronos2", "TiRex", "TimesFM"))
+    assert by_name["Chronos2"]["package_status"] == "missing"
+    assert by_name["TiRex"]["package_status"] == "missing"
+    assert by_name["TimesFM"]["package_status"] == "incompatible"
+    assert imported_names == ["torch", "transformers", "peft"]
+    assert all(name not in sys.modules for name in optional_modules)
+
+
+def test_cache_head_reachability_does_not_promote_missing_files_to_pass(
+    environment_module, monkeypatch, tmp_path
+):
+    module = environment_module
+    _install_happy_fakes(monkeypatch, module, tmp_path, cache_complete=False)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.8.18")
+    monkeypatch.setattr(module.sys, "executable", "/opt/data/private/penv/time/bin/python")
+    monkeypatch.setattr(
+        module,
+        "_probe_pinned_metadata",
+        lambda *_args: {"status": "pass", "http_status": 200},
+    )
+
+    report = module.collect_environment()
+
+    assert all(item["status"] == "download_required" for item in report["models"][:2])
+    assert all(item["network_status"] == "pass" for item in report["models"][:2])
+    assert all(item["download_required"] is True for item in report["models"])
+
+
+@pytest.mark.parametrize(
+    ("model_name", "package_name", "version", "expected_status", "expected_package_status"),
+    [
+        ("Chronos2", "chronos-forecasting", "1.9.0", "incompatible", "incompatible"),
+        ("Chronos2", "chronos-forecasting", "2.0.0", "pass", "pass"),
+        ("TiRex", "tirex-ts", "0.9.0", "incompatible", "incompatible"),
+        ("TiRex", "tirex-ts", "1.0.0", "pass", "pass"),
+        ("TimesFM", "transformers", "5.2.0", "incompatible", "incompatible"),
+        ("TimesFM", "transformers", "5.3.0", "pass", "pass"),
+    ],
+)
+def test_modern_package_floors_are_checked_by_metadata_on_compatible_python(
+    environment_module,
+    monkeypatch,
+    tmp_path,
+    model_name,
+    package_name,
+    version,
+    expected_status,
+    expected_package_status,
+):
+    module = environment_module
+    _install_happy_fakes(monkeypatch, module, tmp_path)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.11.0")
+    monkeypatch.setattr(module.sys, "executable", module.EXPECTED_INTERPRETER)
+    versions = {
+        "torch": "2.3.1+cu118",
+        "transformers": "4.46.2",
+        "peft": "0.13.2",
+        "chronos-forecasting": "2.0.0",
+        "tirex-ts": "1.0.0",
+    }
+    versions[package_name] = version
+    monkeypatch.setattr(module, "_package_version", lambda name: versions[name])
+
+    report = module.collect_environment(offline=True)
+    item = next(item for item in report["models"] if item["name"] == model_name)
+    assert item["status"] == expected_status
+    assert item["package_status"] == expected_package_status
+
+
+def test_modern_python_selects_modern_base_dependency_profile(
+    environment_module, monkeypatch, tmp_path
+):
+    module = environment_module
+    _install_happy_fakes(monkeypatch, module, tmp_path)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.11.0")
+    monkeypatch.setattr(module.sys, "executable", module.EXPECTED_INTERPRETER)
+    versions = {
+        "torch": "2.4.1",
+        "transformers": "5.3.0",
+        "peft": "0.14.0",
+    }
+    monkeypatch.setattr(module, "_package_version", lambda name: versions[name])
+
+    report = module.collect_environment(offline=True)
+
+    assert [item["expected"] for item in report["packages"]] == [
+        ">=2.4,<3", ">=5.3,<6", ">=0.13.2,<1"
+    ]
+    assert [item["status"] for item in report["packages"]] == ["pass", "pass", "pass"]
+    assert report["interpreter"]["status"] == "pass"

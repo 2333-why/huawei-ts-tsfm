@@ -16,15 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from models.tasks import iter_experiment_tasks
 
-MODELS = ("Sundial", "TimeMoE")
-MODES = ("zero_shot", "adapter", "full", "last_layer")
-SHAPES = (
-    ("seq48_pred1", "skippd_luoyang", 48, 1),
-    ("seq48_pred1", "pvod_station00_ylj", 48, 1),
-    ("seq96_h4", "skippd_luoyang", 96, 48),
-    ("seq96_h4", "pvod_station00_ylj", 96, 16),
-)
+
+TASKS = tuple(iter_experiment_tasks())
+TASK_COUNT = len(TASKS)
 SUMMARY_HEADER = (
     "seq_len\tpred_len\tdataset\tmodel\tmode\tstatus\toutput_dir\t"
     "exit_code\tlaunch_gpu\tdata_fingerprint"
@@ -71,7 +67,7 @@ def _fake_python(tmp_path: Path, repo: Path) -> Path:
             if args and args[-1] == "--list-models":
                 event_write({"kind": "list", "args": args,
                              "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")})
-                print("Sundial\nTimeMoE")
+                print("Sundial\nTimeMoE\nChronos2\nTiRex\nTimesFM")
                 raise SystemExit(0)
             if args and args[-1] == "--list-modes":
                 event_write({"kind": "list-modes", "args": args,
@@ -217,20 +213,30 @@ def _harness(tmp_path: Path):
 def _copied_default_harness(tmp_path: Path):
     source_repo = Path(__file__).resolve().parents[1]
     copied_repo = tmp_path / "copied repo"
-    inherited_ignore = shutil.ignore_patterns(".git", "__pycache__", "*.pyc")
-
-    def ignore_checkout_entry(directory, names):
-        ignored = set(inherited_ignore(directory, names))
-        if Path(directory).resolve() == source_repo.resolve():
-            ignored.add("codex")
-        return ignored
-
-    shutil.copytree(source_repo, copied_repo, ignore=ignore_checkout_entry)
+    (copied_repo / "scripts").mkdir(parents=True)
+    (copied_repo / "models").mkdir()
+    (copied_repo / "configs" / "datasets").mkdir(parents=True)
+    shutil.copy2(source_repo / "scripts" / "run_all_foundation_models_2gpu.sh", copied_repo / "scripts")
+    shutil.copy2(source_repo / "scripts" / "smoke_all_foundation_models_2gpu.sh", copied_repo / "scripts")
+    shutil.copy2(source_repo / "models" / "registry.py", copied_repo / "models")
+    shutil.copy2(source_repo / "models" / "tasks.py", copied_repo / "models")
+    (copied_repo / "models" / "__init__.py").write_text("", encoding="utf-8")
+    (copied_repo / "run.py").write_text("# controlled fake runner target\n", encoding="utf-8")
     fake = _fake_python(tmp_path, copied_repo)
     skippd = tmp_path / "default-skippd.parquet"
     pvod = tmp_path / "default-pvod.parquet"
     skippd.write_bytes(b"skippd")
     pvod.write_bytes(b"pvod")
+    config = {
+        "paths": {"parquet_file": str(skippd), "results_root": str(tmp_path / "default-results")}
+    }
+    (copied_repo / "configs" / "datasets" / "skippd_luoyang.json").write_text(
+        json.dumps(config), encoding="utf-8"
+    )
+    pvod_config = dict(config, paths=dict(config["paths"], parquet_file=str(pvod)))
+    (copied_repo / "configs" / "datasets" / "pvod_station00_ylj.yaml").write_text(
+        json.dumps(pvod_config), encoding="utf-8"
+    )
     record = tmp_path / "default-invocations.jsonl"
     env = os.environ.copy()
     env.update(
@@ -247,7 +253,7 @@ def _events(record: Path):
     return [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
 
 
-def test_two_gpu_smoke_expands_32_tasks_with_serial_queues_and_contained_outputs(tmp_path):
+def test_two_gpu_smoke_expands_registry_tasks_with_serial_queues_and_contained_outputs(tmp_path):
     repo, env, output_root, record = _harness(tmp_path)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
@@ -255,17 +261,17 @@ def test_two_gpu_smoke_expands_32_tasks_with_serial_queues_and_contained_outputs
     )
     assert result.returncode == 0, result.stdout + result.stderr
     events = [event for event in _events(record) if event["kind"] == "run"]
+    assert TASK_COUNT == 68
     expected = {
-        (seq, pred, dataset, model, mode)
-        for _setting, dataset, seq, pred in SHAPES
-        for model in MODELS for mode in MODES
+        (task.seq_len, task.pred_len, task.dataset, task.model, task.mode)
+        for task in TASKS
     }
     observed = {
         (event["seq_len"], event["pred_len"], event["dataset"], event["model"], event["mode"])
         for event in events
     }
-    assert len(events) == 32 and observed == expected
-    assert Counter(event["gpu"] for event in events) == Counter({"0": 16, "1": 16})
+    assert len(events) == TASK_COUNT and observed == expected
+    assert Counter(event["gpu"] for event in events) == Counter({"0": TASK_COUNT // 2, "1": TASK_COUNT // 2})
     assert all(not event.get("overlap", False) for event in events)
     assert any(
         left["started_at"] < right["finished_at"] and right["started_at"] < left["finished_at"]
@@ -287,7 +293,7 @@ def test_two_gpu_smoke_expands_32_tasks_with_serial_queues_and_contained_outputs
         assert metrics["phase_steps"] == expected_phase
         assert metrics["limits"] == {"train": 1, "val": 1, "test": 1}
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert rows[0] == SUMMARY_HEADER and len(rows) == 33
+    assert rows[0] == SUMMARY_HEADER and len(rows) == TASK_COUNT + 1
     assert all(row.split("\t")[5] == "PASS" for row in rows[1:])
 
 
@@ -328,10 +334,10 @@ def test_one_runner_failure_is_recorded_and_propagates_after_independent_tasks(t
     )
     assert result.returncode == 1, result.stdout + result.stderr
     events = [event for event in _events(record) if event["kind"] == "run"]
-    assert len(events) == 32
+    assert len(events) == TASK_COUNT
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
     failures = [row.split("\t") for row in rows[1:] if row.split("\t")[5] == "FAIL"]
-    assert len(rows) == 33 and len(failures) == 1
+    assert len(rows) == TASK_COUNT + 1 and len(failures) == 1
     assert failures[0][:5] == ["48", "1", "skippd_luoyang", "Sundial", "adapter"]
     assert failures[0][7] == "17"
 
@@ -353,7 +359,7 @@ def test_valid_resume_skips_every_task_and_keeps_original_gpu_provenance(tmp_pat
     assert second.returncode == 0, second.stdout + second.stderr
     assert len([event for event in _events(record) if event["kind"] == "run"]) == before
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
-    assert Counter(row.split("\t")[8] for row in rows[1:]) == Counter({"0": 16, "1": 16})
+    assert Counter(row.split("\t")[8] for row in rows[1:]) == Counter({"0": TASK_COUNT // 2, "1": TASK_COUNT // 2})
 
 
 def _mutate_completion(output: Path, mutation: str):
@@ -448,7 +454,7 @@ def test_resume_rejects_empty_surplus_summary_column_for_only_that_task(tmp_path
     )
 
 
-def test_dataset_content_change_retries_exactly_16_tasks(tmp_path):
+def test_dataset_content_change_retries_only_affected_tasks(tmp_path):
     repo, env, _output_root, record = _harness(tmp_path)
     assert subprocess.run(
         ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
@@ -463,10 +469,10 @@ def test_dataset_content_change_retries_exactly_16_tasks(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     rerun = [event for event in _events(record) if event["kind"] == "run"][before:]
-    assert len(rerun) == 16 and {event["dataset"] for event in rerun} == {"skippd_luoyang"}
+    assert len(rerun) == sum(task.dataset == "skippd_luoyang" for task in TASKS) and {event["dataset"] for event in rerun} == {"skippd_luoyang"}
 
 
-def test_effective_config_change_retries_exactly_16_tasks(tmp_path):
+def test_effective_config_change_retries_only_affected_tasks(tmp_path):
     repo, env, _output_root, record = _harness(tmp_path)
     assert subprocess.run(
         ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
@@ -484,12 +490,12 @@ def test_effective_config_change_retries_exactly_16_tasks(tmp_path):
         )
         assert result.returncode == 0, result.stdout + result.stderr
         rerun = [event for event in _events(record) if event["kind"] == "run"][before:]
-        assert len(rerun) == 16 and {event["dataset"] for event in rerun} == {"pvod_station00_ylj"}
+        assert len(rerun) == sum(task.dataset == "pvod_station00_ylj" for task in TASKS) and {event["dataset"] for event in rerun} == {"pvod_station00_ylj"}
     finally:
         config.write_text(original, encoding="utf-8")
 
 
-def test_registry_revision_change_retries_exactly_one_model(tmp_path):
+def test_registry_revision_change_retries_only_affected_model(tmp_path):
     repo, env, _output_root, record = _harness(tmp_path)
     assert subprocess.run(
         ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
@@ -511,7 +517,7 @@ def test_registry_revision_change_retries_exactly_one_model(tmp_path):
         )
         assert result.returncode == 0, result.stdout + result.stderr
         rerun = [event for event in _events(record) if event["kind"] == "run"][before:]
-        assert len(rerun) == 16 and {event["model"] for event in rerun} == {"Sundial"}
+        assert len(rerun) == sum(task.model == "Sundial" for task in TASKS) and {event["model"] for event in rerun} == {"Sundial"}
     finally:
         registry.write_text(original, encoding="utf-8")
 
@@ -526,7 +532,7 @@ def test_unset_output_and_summary_paths_use_smoke_defaults_in_isolated_repo(tmp_
     summary = repo / "results_foundation_models_smoke" / "smoke_summary.tsv"
     assert summary.is_file()
     rows = summary.read_text(encoding="utf-8").splitlines()
-    assert rows[0] == SUMMARY_HEADER and len(rows) == 33
+    assert rows[0] == SUMMARY_HEADER and len(rows) == TASK_COUNT + 1
 
 
 def test_unrelated_file_change_keeps_all_valid_resume_tasks_skipped(tmp_path):
@@ -558,8 +564,82 @@ def test_paths_with_spaces_are_supported_and_summary_is_exact(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     summary = spaced / "smoke_summary.tsv"
     rows = summary.read_text(encoding="utf-8").splitlines()
-    assert rows[0] == SUMMARY_HEADER and len(rows) == 33
+    assert rows[0] == SUMMARY_HEADER and len(rows) == TASK_COUNT + 1
     assert all(str(spaced.resolve()) in row for row in rows[1:])
+
+
+def test_simple_train_script_debug_and_matrix_use_unique_timesfm_adapter_runs(tmp_path):
+    repository = Path(__file__).resolve().parents[1]
+    fake = tmp_path / "recording-python"
+    record = tmp_path / "train-invocations.jsonl"
+    fake.write_text(
+        textwrap.dedent(
+            """
+            #!/usr/bin/env python3
+            import json
+            import os
+            import sys
+            from pathlib import Path
+
+            with Path(os.environ["TRAIN_RECORD"]).open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"args": sys.argv[1:]}, sort_keys=True) + "\\n")
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    env = os.environ.copy()
+    env.update(
+        PYTHON=str(fake),
+        TRAIN_RECORD=str(record),
+        RESULTS_ROOT=str(tmp_path / "train results"),
+        CUDA_VISIBLE_DEVICES="3",
+    )
+
+    debug = subprocess.run(
+        ["bash", str(repository / "scripts" / "train_model.sh")],
+        cwd=repository,
+        env=dict(env, DEBUG_MODE="1"),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert debug.returncode == 0, debug.stdout + debug.stderr
+    debug_events = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
+    assert len(debug_events) == 1
+    assert "--mode" in debug_events[0]["args"]
+    assert debug_events[0]["args"][debug_events[0]["args"].index("--mode") + 1] == "adapter"
+    assert debug_events[0]["args"][debug_events[0]["args"].index("--model") + 1] == "TimesFM"
+    assert debug_events[0]["args"][debug_events[0]["args"].index("--debug") + 1] == "True"
+
+    normal = subprocess.run(
+        ["bash", str(repository / "scripts" / "train_model.sh")],
+        cwd=repository,
+        env=dict(env, DEBUG_MODE="0"),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert normal.returncode == 0, normal.stdout + normal.stderr
+    events = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()][1:]
+    assert len(events) == 4
+    model_ids = []
+    output_dirs = []
+    for event in events:
+        args = event["args"]
+        model_ids.append(args[args.index("--model_id") + 1])
+        output_dirs.append(args[args.index("--output_dir") + 1])
+        assert args[args.index("--mode") + 1] == "adapter"
+        assert args[args.index("--task_name") + 1] == "long_term_forecast"
+        assert args[args.index("--is_training") + 1] == "1"
+        assert args[args.index("--debug") + 1] == "False"
+    assert len(set(model_ids)) == 4
+    assert len(set(output_dirs)) == 4
+    datasets = {
+        event["args"][event["args"].index("--data") + 1]
+        for event in events
+    }
+    assert datasets == {"skippd_luoyang", "pvod_station00_ylj"}
 
 
 def test_full_run_branch_omits_smoke_and_publishes_full_summary(tmp_path):
@@ -571,11 +651,11 @@ def test_full_run_branch_omits_smoke_and_publishes_full_summary(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     events = [event for event in _events(record) if event["kind"] == "run"]
-    assert len(events) == 32
+    assert len(events) == TASK_COUNT
     assert all("--smoke" not in event["args"] for event in events)
     summary = output_root / "run_summary.tsv"
     rows = summary.read_text(encoding="utf-8").splitlines()
-    assert rows[0] == SUMMARY_HEADER and len(rows) == 33
+    assert rows[0] == SUMMARY_HEADER and len(rows) == TASK_COUNT + 1
     for event in events:
         output = Path(event["args"][event["args"].index("--output_dir") + 1])
         manifest = (output / "completion.tsv").read_text(encoding="utf-8").splitlines()[1].split("\t")

@@ -236,39 +236,39 @@ def _args(module, tmp_path, mode="zero_shot", **overrides):
 
 
 def _install_fakes(monkeypatch, tmp_path):
-    import run_foundation_model
+    import run
 
     TinyDataset.instances = []
     FakeBackend.instances = []
-    monkeypatch.setattr(run_foundation_model, "PowerOnlyParquetDataset", TinyDataset)
-    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: FakeBackend())
-    return run_foundation_model
+    monkeypatch.setattr(run, "PowerOnlyParquetDataset", TinyDataset)
+    monkeypatch.setattr(run, "build_backend", lambda *args, **kwargs: FakeBackend())
+    return run
 
 
 def test_list_commands_are_lazy_and_exact(capsys, monkeypatch):
-    import run_foundation_model
+    import run
     from models import MODEL_NAMES, RUN_MODES
 
     monkeypatch.setattr(
-        run_foundation_model,
+        run,
         "PowerOnlyParquetDataset",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("dataset constructed")),
     )
     monkeypatch.setattr(
-        run_foundation_model,
+        run,
         "build_backend",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("backend constructed")),
     )
 
-    assert run_foundation_model.main(["--list-models"]) == 0
+    assert run.main(["--list-models"]) == 0
     assert tuple(capsys.readouterr().out.splitlines()) == MODEL_NAMES
-    assert run_foundation_model.main(["--list-modes"]) == 0
+    assert run.main(["--list-modes"]) == 0
     assert tuple(capsys.readouterr().out.splitlines()) == RUN_MODES
 
 
 def test_list_commands_are_isolated_in_a_fresh_process():
     repository = Path(__file__).resolve().parents[1]
-    runner = repository / "run_foundation_model.py"
+    runner = repository / "run.py"
     code = """
 import builtins
 import runpy
@@ -282,7 +282,7 @@ def guarded_import(name, *args, **kwargs):
     return real_import(name, *args, **kwargs)
 
 builtins.__import__ = guarded_import
-sys.argv = ['run_foundation_model.py', '--list-models']
+sys.argv = ['run.py', '--list-models']
 try:
     runpy.run_path(sys.argv[0], run_name='__main__')
 except SystemExit as exc:
@@ -295,35 +295,35 @@ except SystemExit as exc:
         capture_output=True,
     )
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.splitlines() == ["Sundial", "TimeMoE"]
+    assert completed.stdout.splitlines() == ["Sundial", "TimeMoE", "Chronos2", "TiRex", "TimesFM"]
     assert completed.stderr == ""
 
 
 def test_parser_requires_runtime_identity_and_positive_lengths():
-    import run_foundation_model
+    import run
 
     with pytest.raises(SystemExit):
-        run_foundation_model.parse_args([])
+        run.parse_args([])
     with pytest.raises(SystemExit):
-        run_foundation_model.parse_args(["--dataset", "skippd_luoyang", "--model", "Sundial"])
+        run.parse_args(["--dataset", "skippd_luoyang", "--model", "Sundial"])
     with pytest.raises(SystemExit):
-        run_foundation_model.parse_args([
+        run.parse_args([
             "--dataset", "skippd_luoyang", "--model", "Sundial", "--mode", "zero_shot",
             "--seq_len", "0", "--pred_len", "1",
         ])
 
 
 def test_parser_defaults_config_and_mode_specific_smoke():
-    import run_foundation_model
+    import run
 
-    args = run_foundation_model.parse_args([
+    args = run.parse_args([
         "--dataset", "pvod_station00_ylj", "--model", "TimeMoE", "--mode", "zero_shot",
         "--seq_len", "48", "--pred_len", "1", "--epochs", "8", "--smoke",
     ])
     assert args.config.name == "pvod_station00_ylj.yaml"
     assert (args.epochs, args.batch_size, args.max_train_steps, args.max_eval_steps, args.max_test_steps) == (0, 2, 1, 1, 1)
 
-    trained = run_foundation_model.parse_args([
+    trained = run.parse_args([
         "--dataset", "skippd_luoyang", "--model", "Sundial", "--mode", "full",
         "--seq_len", "48", "--pred_len", "1", "--smoke",
     ])
@@ -331,17 +331,17 @@ def test_parser_defaults_config_and_mode_specific_smoke():
 
 
 def test_runtime_rejects_cuda_when_unavailable(monkeypatch):
-    import run_foundation_model
+    import run
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises((RuntimeError, ValueError), match="CUDA|cuda"):
-        run_foundation_model._device_from_arg("cuda:0")
+        run._device_from_arg("cuda:0")
 
 
 def test_seed_is_applied_before_dataset_and_backend_and_recorded(monkeypatch, tmp_path):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     observations = []
 
     class SeedDataset(TinyDataset):
@@ -358,9 +358,9 @@ def test_seed_is_applied_before_dataset_and_backend_and_recorded(monkeypatch, tm
             )
             super().__init__(*args, **kwargs)
 
-    run_foundation_model.PowerOnlyParquetDataset = SeedDataset
-    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: SeedBackend())
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot", seed=12345)
+    run.PowerOnlyParquetDataset = SeedDataset
+    monkeypatch.setattr(run, "build_backend", lambda *args, **kwargs: SeedBackend())
+    args = _args(run, tmp_path, mode="zero_shot", seed=12345)
 
     random.seed(999)
     np.random.seed(999)
@@ -376,7 +376,7 @@ def test_seed_is_applied_before_dataset_and_backend_and_recorded(monkeypatch, tm
     np.random.seed(999)
     torch.manual_seed(999)
 
-    result = run_foundation_model.run(args)
+    result = run.run(args)
 
     assert observations == expected
     metrics = json.loads(result["metrics"].read_text(encoding="utf-8"))
@@ -386,28 +386,28 @@ def test_seed_is_applied_before_dataset_and_backend_and_recorded(monkeypatch, tm
 
 
 def test_backend_identity_must_match_pinned_registry(monkeypatch, tmp_path):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     backend = FakeBackend()
     backend.model_id = "other/model"
     backend.revision = "other-revision"
-    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot")
+    monkeypatch.setattr(run, "build_backend", lambda *args, **kwargs: backend)
+    args = _args(run, tmp_path, mode="zero_shot")
 
     with pytest.raises(ValueError, match="pinned|identity"):
-        run_foundation_model.run(args)
+        run.run(args)
     assert not (args.output_dir / "completion.tsv").exists()
 
 
 def test_zero_shot_constructs_only_test_without_optimizer_and_writes_artifacts(monkeypatch, tmp_path):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
-    run_foundation_model.PowerOnlyParquetDataset = LeakageDataset
+    run = _install_fakes(monkeypatch, tmp_path)
+    run.PowerOnlyParquetDataset = LeakageDataset
     monkeypatch.setattr(torch.optim, "Adam", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("optimizer")))
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot", smoke=True, pred_len=3)
-    result = run_foundation_model.run(args)
+    args = _args(run, tmp_path, mode="zero_shot", smoke=True, pred_len=3)
+    result = run.run(args)
 
     assert [dataset.flag for dataset in TinyDataset.instances] == ["test"]
     backend = FakeBackend.instances[0]
@@ -435,9 +435,9 @@ def test_zero_shot_constructs_only_test_without_optimizer_and_writes_artifacts(m
 
 @pytest.mark.parametrize("mode", ["adapter", "full", "last_layer"])
 def test_training_modes_restore_best_state_and_use_trainable_parameters(monkeypatch, tmp_path, mode):
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
-    args = _args(run_foundation_model, tmp_path, mode=mode, smoke=True)
-    result = run_foundation_model.run(args)
+    run = _install_fakes(monkeypatch, tmp_path)
+    args = _args(run, tmp_path, mode=mode, smoke=True)
+    result = run.run(args)
 
     assert [dataset.flag for dataset in TinyDataset.instances] == ["train", "val", "test"]
     backend = FakeBackend.instances[0]
@@ -455,14 +455,14 @@ def test_training_modes_restore_best_state_and_use_trainable_parameters(monkeypa
 
 @pytest.mark.parametrize("mode", ["adapter", "full", "last_layer"])
 def test_training_restores_epoch_zero_best_state_before_test(monkeypatch, tmp_path, mode):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
-    run_foundation_model.PowerOnlyParquetDataset = RestoreDataset
+    run = _install_fakes(monkeypatch, tmp_path)
+    run.PowerOnlyParquetDataset = RestoreDataset
     backend = RestoreBackend()
-    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
+    monkeypatch.setattr(run, "build_backend", lambda *args, **kwargs: backend)
     args = _args(
-        run_foundation_model,
+        run,
         tmp_path,
         mode=mode,
         epochs=2,
@@ -471,7 +471,7 @@ def test_training_restores_epoch_zero_best_state_before_test(monkeypatch, tmp_pa
         max_test_steps=1,
     )
 
-    result = run_foundation_model.run(args)
+    result = run.run(args)
 
     assert backend.model.strict_loads
     restored_state, strict = backend.model.strict_loads[-1]
@@ -489,9 +489,9 @@ def test_training_restores_epoch_zero_best_state_before_test(monkeypatch, tmp_pa
 
 
 def test_validation_loss_is_weighted_by_valid_points(monkeypatch, tmp_path):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     val_batches = [
         {
             "history": torch.ones(1, 2, 1),
@@ -507,7 +507,7 @@ def test_validation_loss_is_weighted_by_valid_points(monkeypatch, tmp_path):
         },
     ]
     backend = FakeBackend()
-    result = run_foundation_model._collect_predictions(
+    result = run._collect_predictions(
         backend, val_batches, torch.device("cpu"), 2, 3, 0, "val"
     )
     # Fake predictions are 0.5; literal SSE is 2.25 + .25 + .25 + .25 over 4 points.
@@ -515,15 +515,15 @@ def test_validation_loss_is_weighted_by_valid_points(monkeypatch, tmp_path):
 
 
 def test_predictions_are_clipped_before_csv_and_metrics(monkeypatch, tmp_path):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     backend = FakeBackend()
     backend.model.weight.requires_grad_(False)
     backend.predict = lambda history, pred_len: torch.tensor([[[-1.0]]]).expand(history.shape[0], pred_len, 1)
-    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot")
-    run_foundation_model.run(args)
+    monkeypatch.setattr(run, "build_backend", lambda *args, **kwargs: backend)
+    args = _args(run, tmp_path, mode="zero_shot")
+    run.run(args)
     with (args.output_dir / "predictions.csv").open(newline="", encoding="utf-8") as handle:
         row = next(csv.DictReader(handle))
     assert float(row["y_pred"]) == 0.0
@@ -532,19 +532,19 @@ def test_predictions_are_clipped_before_csv_and_metrics(monkeypatch, tmp_path):
 
 
 def test_float32_extreme_and_bounds_are_clipped_before_test_loss_and_artifacts(monkeypatch, tmp_path):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
-    run_foundation_model.PowerOnlyParquetDataset = ExtremeDataset
+    run = _install_fakes(monkeypatch, tmp_path)
+    run.PowerOnlyParquetDataset = ExtremeDataset
     backend = FakeBackend()
     extreme = torch.finfo(torch.float32).max
     backend.predict = lambda history, pred_len: torch.tensor(
         [[[extreme], [-1.0]]], dtype=torch.float32
     ).expand(history.shape[0], pred_len, 1)
-    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot", pred_len=2)
+    monkeypatch.setattr(run, "build_backend", lambda *args, **kwargs: backend)
+    args = _args(run, tmp_path, mode="zero_shot", pred_len=2)
 
-    result = run_foundation_model.run(args)
+    result = run.run(args)
 
     metrics = json.loads(result["metrics"].read_text(encoding="utf-8"))
     assert metrics["test_loss_normalized"] == pytest.approx(1.0)
@@ -587,61 +587,61 @@ class CountingLoader:
 
 
 def test_max_step_limit_does_not_request_an_extra_batch(monkeypatch, tmp_path):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     loader = CountingLoader([_batch(), _batch(value=2.0)])
-    monkeypatch.setattr(run_foundation_model, "_dataset_and_loader", lambda args, flag: (TinyDataset(args.config, flag, 2, 1), loader))
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot", max_test_steps=1)
-    run_foundation_model.run(args)
+    monkeypatch.setattr(run, "_dataset_and_loader", lambda args, flag: (TinyDataset(args.config, flag, 2, 1), loader))
+    args = _args(run, tmp_path, mode="zero_shot", max_test_steps=1)
+    run.run(args)
     assert loader.next_calls == 1
 
 
 @pytest.mark.parametrize("bad_prediction", [torch.tensor([[[float("nan")]]]), torch.ones(1, 2, 1, 1), torch.ones(1, 1, 2)])
 def test_bad_prediction_leaves_completion_absent(monkeypatch, tmp_path, bad_prediction):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     backend = FakeBackend()
     backend.predict = lambda history, pred_len: bad_prediction
-    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot")
+    monkeypatch.setattr(run, "build_backend", lambda *args, **kwargs: backend)
+    args = _args(run, tmp_path, mode="zero_shot")
     with pytest.raises(ValueError):
-        run_foundation_model.run(args)
+        run.run(args)
     assert not (args.output_dir / "completion.tsv").exists()
 
 
 @pytest.mark.parametrize("failure", ["empty", "masked"])
 @pytest.mark.parametrize("phase", ["train", "val", "test"])
 def test_empty_and_all_masked_phases_leave_completion_absent(monkeypatch, tmp_path, phase, failure):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     valid = [_batch()]
     failing = [] if failure == "empty" else [_batch(mask=torch.tensor([[False]]))]
     batches = {name: (failing if name == phase else valid) for name in ("train", "val", "test")}
     monkeypatch.setattr(
-        run_foundation_model,
+        run,
         "_dataset_and_loader",
         lambda args, flag: (TinyDataset(args.config, flag, 2, 1), batches[flag]),
     )
-    args = _args(run_foundation_model, tmp_path, mode="full")
+    args = _args(run, tmp_path, mode="full")
     expected = "empty" if failure == "empty" else "zero valid targets"
     with pytest.raises(RuntimeError, match=expected):
-        run_foundation_model.run(args)
+        run.run(args)
     assert not (args.output_dir / "completion.tsv").exists()
 
 
 def test_completion_contains_absolute_identity_and_exact_hashes(monkeypatch, tmp_path):
-    import run_foundation_model
+    import run
 
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot")
-    result = run_foundation_model.run(args)
+    run = _install_fakes(monkeypatch, tmp_path)
+    args = _args(run, tmp_path, mode="zero_shot")
+    result = run.run(args)
     rows = result["completion"].read_text(encoding="utf-8").splitlines()
     assert len(rows) == 2
     header = rows[0].split("\t")
-    assert header == list(run_foundation_model.FOUNDATION_COMPLETION_HEADER)
+    assert header == list(run.FOUNDATION_COMPLETION_HEADER)
     assert all(len(row.split("\t")) == len(header) for row in rows)
     values = dict(zip(header, rows[1].split("\t")))
     assert values["schema_version"] == "2"
@@ -667,16 +667,16 @@ def test_completion_contains_absolute_identity_and_exact_hashes(monkeypatch, tmp
 
 
 def test_all_masked_training_batch_is_counted_but_skips_loss_and_optimizer(monkeypatch, tmp_path):
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     train_loader = [_batch(mask=torch.tensor([[False]])), _batch(mask=torch.tensor([[True]]))]
     batches = {"train": train_loader, "val": [_batch()], "test": [_batch()]}
     monkeypatch.setattr(
-        run_foundation_model,
+        run,
         "_dataset_and_loader",
         lambda args, flag: (TinyDataset(args.config, flag, 2, 1), batches[flag]),
     )
-    args = _args(run_foundation_model, tmp_path, mode="full")
-    result = run_foundation_model.run(args)
+    args = _args(run, tmp_path, mode="full")
+    result = run.run(args)
     backend = FakeBackend.instances[0]
     assert len(backend.loss_calls) == 1
     metrics = json.loads(result["metrics"].read_text(encoding="utf-8"))
@@ -685,18 +685,18 @@ def test_all_masked_training_batch_is_counted_but_skips_loss_and_optimizer(monke
 
 @pytest.mark.parametrize("bad_loss", [torch.tensor(1.0), torch.tensor(float("nan")), torch.ones(1)])
 def test_invalid_native_loss_leaves_completion_absent(monkeypatch, tmp_path, bad_loss):
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     backend = FakeBackend()
     backend.training_loss = lambda history, target, target_mask: bad_loss
-    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
-    args = _args(run_foundation_model, tmp_path, mode="full")
+    monkeypatch.setattr(run, "build_backend", lambda *args, **kwargs: backend)
+    args = _args(run, tmp_path, mode="full")
     with pytest.raises(ValueError, match="loss"):
-        run_foundation_model.run(args)
+        run.run(args)
     assert not (args.output_dir / "completion.tsv").exists()
 
 
 def test_strict_checkpoint_restore_failure_leaves_completion_absent(monkeypatch, tmp_path):
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     backend = FakeBackend()
 
     def fail_restore(state, strict=False):
@@ -704,15 +704,15 @@ def test_strict_checkpoint_restore_failure_leaves_completion_absent(monkeypatch,
         raise RuntimeError("bad state")
 
     backend.model.load_state_dict = fail_restore
-    monkeypatch.setattr(run_foundation_model, "build_backend", lambda *args, **kwargs: backend)
-    args = _args(run_foundation_model, tmp_path, mode="full")
+    monkeypatch.setattr(run, "build_backend", lambda *args, **kwargs: backend)
+    args = _args(run, tmp_path, mode="full")
     with pytest.raises(RuntimeError, match="restoration"):
-        run_foundation_model.run(args)
+        run.run(args)
     assert not (args.output_dir / "completion.tsv").exists()
 
 
 def test_optimizer_receives_exact_requires_grad_parameters(monkeypatch, tmp_path):
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     original_adam = torch.optim.Adam
     captured = []
 
@@ -721,23 +721,283 @@ def test_optimizer_receives_exact_requires_grad_parameters(monkeypatch, tmp_path
         return original_adam(parameters, *args, **kwargs)
 
     monkeypatch.setattr(torch.optim, "Adam", recording_adam)
-    args = _args(run_foundation_model, tmp_path, mode="full", smoke=True)
-    run_foundation_model.run(args)
+    args = _args(run, tmp_path, mode="full", smoke=True)
+    run.run(args)
     backend = FakeBackend.instances[0]
     assert captured == [[parameter for parameter in backend.model.parameters() if parameter.requires_grad]]
 
 
 def test_stale_completion_is_removed_before_backend_failure(monkeypatch, tmp_path):
-    run_foundation_model = _install_fakes(monkeypatch, tmp_path)
+    run = _install_fakes(monkeypatch, tmp_path)
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     (output_dir / "completion.tsv").write_text("stale\n", encoding="utf-8")
     monkeypatch.setattr(
-        run_foundation_model,
+        run,
         "build_backend",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("construction failed")),
     )
-    args = _args(run_foundation_model, tmp_path, mode="zero_shot")
+    args = _args(run, tmp_path, mode="zero_shot")
     with pytest.raises(RuntimeError, match="construction"):
-        run_foundation_model.run(args)
+        run.run(args)
     assert not (output_dir / "completion.tsv").exists()
+
+
+def test_run_module_normalizes_aliases_and_rejects_unsupported_mode_before_backend(monkeypatch):
+    import run
+
+    observed = {}
+    monkeypatch.setattr(
+        run,
+        "build_backend",
+        lambda *args, **kwargs: observed.setdefault("built", True),
+    )
+    with pytest.raises(SystemExit):
+        run.parse_args(
+            [
+                "--data", "skippd_luoyang",
+                "--model", "TiRex",
+                "--mode", "adapter",
+                "--seq_len", "48",
+                "--pred_len", "1",
+                "--train_epochs", "1",
+                "--debug", "False",
+            ]
+        )
+    assert observed == {}
+
+
+@pytest.mark.parametrize(
+    ("canonical", "alias", "value"),
+    [
+        ("--dataset", "--data", "skippd_luoyang"),
+        ("--epochs", "--train_epochs", "1"),
+    ],
+)
+def test_parser_accepts_equal_canonical_and_alias_values(canonical, alias, value):
+    import run
+
+    args = run.parse_args(
+        [
+            "--dataset", "skippd_luoyang",
+            "--model", "Sundial",
+            "--mode", "full",
+            "--seq_len", "2",
+            "--pred_len", "1",
+            canonical, value,
+            alias, value,
+        ]
+    )
+    assert args.dataset == "skippd_luoyang"
+    assert args.epochs == 1
+
+
+def test_parser_accepts_alias_only_values_and_removes_alias_attributes():
+    import run
+
+    args = run.parse_args(
+        [
+            "--data", "skippd_luoyang",
+            "--model", "Sundial",
+            "--mode", "full",
+            "--seq_len", "2",
+            "--pred_len", "1",
+            "--train_epochs", "1",
+            "--debug", "False",
+        ]
+    )
+    assert args.dataset == "skippd_luoyang"
+    assert args.epochs == 1
+    assert args.smoke is False
+    assert not hasattr(args, "data")
+    assert not hasattr(args, "train_epochs")
+    assert not hasattr(args, "debug")
+
+
+def test_parser_accepts_equal_smoke_and_debug_values():
+    import run
+
+    args = run.parse_args(
+        [
+            "--dataset", "skippd_luoyang",
+            "--model", "Sundial",
+            "--mode", "full",
+            "--seq_len", "2",
+            "--pred_len", "1",
+            "--smoke",
+            "--debug", "True",
+        ]
+    )
+    assert args.smoke is True
+    assert args.epochs == 1
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--dataset", "skippd_luoyang", "--data", "pvod_station00_ylj"],
+        ["--epochs", "1", "--train_epochs", "2"],
+        ["--smoke", "--debug", "False"],
+    ],
+)
+def test_parser_rejects_genuine_alias_conflicts(argv):
+    import run
+
+    base = [
+        "--dataset", "skippd_luoyang",
+        "--model", "Sundial",
+        "--mode", "full",
+        "--seq_len", "2",
+        "--pred_len", "1",
+    ]
+    with pytest.raises(SystemExit):
+        run.parse_args(base + argv)
+
+
+@pytest.mark.parametrize("value", ["maybe", "", "1", "2", "yes", "truthy"])
+def test_parser_rejects_malformed_debug_boolean(value):
+    import run
+
+    with pytest.raises(SystemExit):
+        run.parse_args(
+            [
+                "--dataset", "skippd_luoyang",
+                "--model", "Sundial",
+                "--mode", "full",
+                "--seq_len", "2",
+                "--pred_len", "1",
+                "--debug", value,
+            ]
+        )
+
+
+def test_parser_rejects_unsupported_model_mode_before_backend_import():
+    import run
+
+    with pytest.raises(SystemExit):
+        run.parse_args(
+            [
+                "--dataset", "skippd_luoyang",
+                "--model", "TiRex",
+                "--mode", "adapter",
+                "--seq_len", "48",
+                "--pred_len", "1",
+            ]
+        )
+
+
+def test_parser_rejects_invalid_dataset_alias_without_traceback():
+    import run
+
+    with pytest.raises(SystemExit):
+        run.parse_args(
+            [
+                "--data", "not-a-dataset",
+                "--model", "Sundial",
+                "--mode", "zero_shot",
+                "--seq_len", "48",
+                "--pred_len", "1",
+            ]
+        )
+
+
+def test_direct_namespace_rejects_unsupported_model_mode_before_backend(monkeypatch, tmp_path):
+    import run
+
+    module = _install_fakes(monkeypatch, tmp_path)
+    observed = []
+    monkeypatch.setattr(module, "build_backend", lambda *args, **kwargs: observed.append(True))
+    args = _args(module, tmp_path, model="TiRex", mode="adapter")
+    with pytest.raises(ValueError, match="does not support mode"):
+        module.run(args)
+    assert observed == []
+
+
+def test_parser_rejects_unknown_arguments():
+    import run
+
+    with pytest.raises(SystemExit):
+        run.parse_args(
+            [
+                "--dataset", "skippd_luoyang",
+                "--model", "Sundial",
+                "--mode", "full",
+                "--seq_len", "2",
+                "--pred_len", "1",
+                "--not-a-runner-option",
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("task_name", "long_term_forecast"), ("is_training", True)],
+)
+def test_direct_namespace_consistency_assertions_precede_backend(monkeypatch, tmp_path, field, value):
+    import run
+
+    module = _install_fakes(monkeypatch, tmp_path)
+    observed = []
+    monkeypatch.setattr(module, "build_backend", lambda *args, **kwargs: observed.append(True))
+    args = _args(module, tmp_path, mode="zero_shot", **{field: value})
+    with pytest.raises(ValueError, match="inconsistent"):
+        module.run(args)
+    assert observed == []
+
+
+def test_direct_namespace_aliases_are_normalized_before_lifecycle(monkeypatch, tmp_path):
+    import run
+
+    module = _install_fakes(monkeypatch, tmp_path)
+    args = _args(module, tmp_path, mode="zero_shot")
+    delattr(args, "dataset")
+    args.data = "skippd_luoyang"
+    delattr(args, "epochs")
+    args.train_epochs = 1
+    delattr(args, "smoke")
+    args.debug = "False"
+    result = module.run(args)
+    assert result["completion"].is_file()
+
+
+def test_default_output_cleanup_happens_before_alias_conflict(monkeypatch, tmp_path):
+    import run
+
+    module = _install_fakes(monkeypatch, tmp_path)
+    config = tmp_path / "config.json"
+    results_root = tmp_path / "default-results"
+    config.write_text(json.dumps({"paths": {"results_root": str(results_root)}}), encoding="utf-8")
+    output = results_root / "foundation_models" / "skippd_luoyang" / "Sundial" / "zero_shot"
+    output.mkdir(parents=True)
+    completion = output / "completion.tsv"
+    completion.write_text("stale\n", encoding="utf-8")
+    args = _args(
+        module,
+        tmp_path,
+        mode="zero_shot",
+        config=config,
+        output_dir=None,
+    )
+    args.data = "pvod_station00_ylj"
+
+    with pytest.raises(ValueError, match="conflicting"):
+        module.run(args)
+    assert not completion.exists()
+
+
+def test_requested_model_id_is_metadata_only_and_pinned_loader_identity_survives(monkeypatch, tmp_path):
+    import run
+
+    module = _install_fakes(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(module, "build_backend", lambda *args, **kwargs: (calls.append((args, kwargs)) or FakeBackend()))
+    args = _args(module, tmp_path, mode="zero_shot", model_id="caller/model")
+    result = module.run(args)
+
+    assert calls == [(("Sundial", torch.device("cpu")), {})]
+    metrics = json.loads(result["metrics"].read_text(encoding="utf-8"))
+    checkpoint = torch.load(result["checkpoint"], map_location="cpu")
+    assert metrics["model_id"] == "thuml/sundial-base-128m"
+    assert metrics["requested_model_id"] == "caller/model"
+    assert checkpoint["model_id"] == "thuml/sundial-base-128m"
+    assert checkpoint["requested_model_id"] == "caller/model"

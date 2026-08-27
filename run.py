@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 
 from data_provider.power_only import PowerOnlyParquetDataset, power_only_batch
 from models.factory import build_backend
-from models.registry import MODEL_NAMES, RUN_MODES, get_model_spec
+from models.registry import MODEL_NAMES, RUN_MODES, get_model_spec, validate_model_mode
 from models.trainability import LoraSettings
 from utils.artifacts import json_safe as _json_safe
 from utils.artifacts import sha256 as _sha256
@@ -70,6 +70,129 @@ COMPLETION_HEADER = (
     "model_revision",
 )
 FOUNDATION_COMPLETION_HEADER = COMPLETION_HEADER
+
+
+def _parse_debug_value(value: Any) -> bool:
+    """Parse the reference runner's explicit ``--debug`` boolean spelling."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    raise ValueError("debug must be a boolean (True or False)")
+
+
+def _parse_is_training_value(value: Any) -> bool:
+    """Parse the reference ``is_training`` consistency flag."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+    raise ValueError("is_training must be a boolean (0/1 or True/False)")
+
+
+def _present(args: Any, name: str) -> bool:
+    """Treat ``None`` as omitted for direct Namespace compatibility."""
+
+    return hasattr(args, name) and getattr(args, name) is not None
+
+
+def _coalesce_alias(args: Any, canonical: str, alias: str, default: Any) -> Any:
+    """Merge one canonical flag and its alias while retaining conflict checks."""
+
+    canonical_present = _present(args, canonical)
+    alias_present = _present(args, alias)
+    canonical_value = getattr(args, canonical, None)
+    alias_value = getattr(args, alias, None)
+    if canonical == "smoke":
+        if canonical_present:
+            canonical_value = (
+                _parse_debug_value(canonical_value)
+                if isinstance(canonical_value, str)
+                else bool(canonical_value)
+            )
+        if alias_present:
+            alias_value = _parse_debug_value(alias_value)
+    elif canonical == "epochs":
+        if canonical_present:
+            try:
+                canonical_value = int(canonical_value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("epochs must be an integer") from exc
+        if alias_present:
+            try:
+                alias_value = int(alias_value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("train_epochs must be an integer") from exc
+    if canonical_present and alias_present and canonical_value != alias_value:
+        raise ValueError(
+            f"conflicting values for --{canonical} and --{alias}"
+        )
+    if canonical_present:
+        value = canonical_value
+    elif alias_present:
+        value = alias_value
+    else:
+        value = default
+    setattr(args, canonical, value)
+    if hasattr(args, alias):
+        delattr(args, alias)
+    return value
+
+
+def _normalize_args(args: Any) -> Any:
+    """Normalize CLI aliases for both parsed and directly-created Namespaces."""
+
+    if not hasattr(args, "dataset") and not hasattr(args, "data"):
+        setattr(args, "dataset", None)
+    _coalesce_alias(args, "dataset", "data", None)
+    _coalesce_alias(args, "epochs", "train_epochs", 1)
+    _coalesce_alias(args, "smoke", "debug", False)
+
+    if not _present(args, "model_id"):
+        setattr(args, "model_id", None)
+    if not _present(args, "task_name"):
+        setattr(args, "task_name", None)
+    if not _present(args, "is_training"):
+        setattr(args, "is_training", None)
+    if not _present(args, "config"):
+        setattr(args, "config", None)
+    if not _present(args, "seq_len"):
+        setattr(args, "seq_len", None)
+    if not _present(args, "pred_len"):
+        setattr(args, "pred_len", None)
+    for name, default in (
+        ("max_train_steps", 0),
+        ("max_eval_steps", 0),
+        ("max_test_steps", 0),
+        ("batch_size", 64),
+        ("num_workers", 0),
+        ("prefetch_factor", 2),
+        ("learning_rate", 1e-3),
+        ("seed", 2024),
+        ("device", "auto"),
+        ("output_dir", None),
+        ("lora_r", 8),
+        ("lora_alpha", 8),
+        ("lora_dropout", 0.0),
+        ("lora_bias", "none"),
+        ("lora_task_type", None),
+        ("lora_fan_in_fan_out", False),
+    ):
+        if not _present(args, name):
+            setattr(args, name, default)
+    return args
 
 
 def _seed_everything(seed: Any) -> int:
@@ -146,6 +269,7 @@ def _step_limit(value: Optional[int]) -> Optional[int]:
 def _validate_runtime_args(args: Any) -> None:
     """Validate the runtime contract before constructing any dataset/backend."""
 
+    _normalize_args(args)
     dataset = getattr(args, "dataset", None)
     model = getattr(args, "model", None)
     mode = getattr(args, "mode", None)
@@ -161,6 +285,36 @@ def _validate_runtime_args(args: Any) -> None:
         raise ValueError(
             f"mode is required and must be one of: {', '.join(RUN_MODES)}"
         )
+    # Capability validation is intentionally before config, dataset, or backend
+    # construction so unsupported combinations cannot import optional packages.
+    validate_model_mode(model, mode)
+
+    requested_model_id = getattr(args, "model_id", None)
+    if requested_model_id is not None:
+        if not isinstance(requested_model_id, str) or not requested_model_id.strip():
+            raise ValueError("model_id must be a non-empty string when supplied")
+        args.model_id = requested_model_id.strip()
+
+    task_name = getattr(args, "task_name", None)
+    if task_name is not None:
+        expected_task_name = "zero_shot_forecast" if mode == "zero_shot" else "long_term_forecast"
+        if task_name != expected_task_name:
+            raise ValueError(
+                f"task_name {task_name!r} is inconsistent with mode {mode!r}; "
+                f"expected {expected_task_name!r}"
+            )
+    is_training = getattr(args, "is_training", None)
+    if is_training is not None:
+        try:
+            is_training_value = _parse_is_training_value(is_training)
+        except ValueError as exc:
+            raise ValueError("is_training must be a boolean (0/1 or True/False)") from exc
+        expected_training = mode != "zero_shot"
+        if is_training_value != expected_training:
+            raise ValueError(
+                f"is_training {is_training!r} is inconsistent with mode {mode!r}"
+            )
+        args.is_training = is_training_value
 
     for name in ("seq_len", "pred_len", "batch_size"):
         value = getattr(args, name, None)
@@ -602,6 +756,13 @@ def _identity(backend: Any, model_name: str) -> Tuple[str, str]:
     return str(spec.model_id), str(spec.revision)
 
 
+def _experiment_model_id(args: Any, pinned_model_id: str) -> str:
+    """Return the user-supplied identity while retaining the pinned loader ID."""
+
+    requested = getattr(args, "model_id", None)
+    return str(pinned_model_id if requested is None else requested)
+
+
 def _state_dict_cpu(model: Any) -> Dict[str, Any]:
     state = model.state_dict()
     return {
@@ -673,6 +834,7 @@ def _checkpoint_payload(
     revision: str,
     epochs: Optional[int] = None,
     phase_steps: Optional[Mapping[str, int]] = None,
+    experiment_model_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if epochs is None:
         epochs = int(getattr(args, "epochs", 0))
@@ -689,6 +851,8 @@ def _checkpoint_payload(
         "model": str(args.model),
         "model_name": str(args.model),
         "model_id": model_id,
+        "requested_model_id": model_id if experiment_model_id is None else str(experiment_model_id),
+        "experiment_model_id": model_id if experiment_model_id is None else str(experiment_model_id),
         "model_revision": revision,
         "effective_revision": revision,
         "revision": revision,
@@ -744,6 +908,7 @@ def _validate_checkpoint_identity(
     revision: str,
     report: Mapping[str, Any],
     lora_settings: Mapping[str, Any],
+    experiment_model_id: Optional[str] = None,
 ) -> None:
     expected = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
@@ -764,6 +929,19 @@ def _validate_checkpoint_identity(
     for key, value in expected.items():
         if checkpoint.get(key) != value:
             raise RuntimeError(f"checkpoint identity mismatch for {key}")
+    expected_experiment_model_id = (
+        model_id if experiment_model_id is None else str(experiment_model_id)
+    )
+    # The experiment label was added after the original checkpoint schema.
+    # Older default-model checkpoints remain restorable; a custom label must
+    # be present and match once the caller asks for one.
+    for key in ("requested_model_id", "experiment_model_id"):
+        observed = checkpoint.get(key)
+        if observed is None:
+            if expected_experiment_model_id != model_id:
+                raise RuntimeError(f"checkpoint identity mismatch for {key}")
+        elif str(observed) != expected_experiment_model_id:
+            raise RuntimeError(f"checkpoint identity mismatch for {key}")
     if "state_dict" not in checkpoint or not isinstance(checkpoint["state_dict"], Mapping):
         raise RuntimeError("training checkpoint has no restorable state_dict")
 
@@ -781,6 +959,7 @@ def _restore_checkpoint(
     device: torch.device,
     expected_epoch: Optional[int] = None,
     expected_val_loss: Optional[float] = None,
+    experiment_model_id: Optional[str] = None,
 ) -> Mapping[str, Any]:
     try:
         checkpoint = torch.load(path, map_location=device)
@@ -789,7 +968,15 @@ def _restore_checkpoint(
     if not isinstance(checkpoint, Mapping):
         raise RuntimeError("checkpoint must contain a mapping")
     _validate_checkpoint_identity(
-        checkpoint, args, dataset, mode, model_id, revision, report, lora_settings
+        checkpoint,
+        args,
+        dataset,
+        mode,
+        model_id,
+        revision,
+        report,
+        lora_settings,
+        experiment_model_id=experiment_model_id,
     )
     if expected_epoch is not None and checkpoint.get("epoch") != int(expected_epoch):
         raise RuntimeError("checkpoint identity mismatch for epoch")
@@ -828,6 +1015,37 @@ def _resolve_output_dir(args: Any) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     _remove_completion(output_dir)
     return output_dir
+
+
+def _pre_normalization_output_dir(args: Any) -> Optional[Path]:
+    """Clear a resolvable default output before alias conflict validation."""
+
+    if getattr(args, "output_dir", None) is not None:
+        output_dir = Path(args.output_dir).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _remove_completion(output_dir)
+        return output_dir
+
+    dataset = getattr(args, "dataset", None)
+    if dataset is None:
+        dataset = getattr(args, "data", None)
+    model = getattr(args, "model", None)
+    mode = getattr(args, "mode", None)
+    if dataset not in DATASET_LOADERS or model not in MODEL_NAMES or mode not in RUN_MODES:
+        return None
+    config_value = getattr(args, "config", None)
+    config_path = Path(config_value) if config_value is not None else DEFAULT_CONFIGS[dataset]
+    try:
+        config = _read_config(config_path)
+        root = Path(config["paths"]["results_root"])
+        if not root.is_absolute():
+            root = root.resolve()
+        output_dir = (root / "foundation_models" / dataset / model / mode).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _remove_completion(output_dir)
+        return output_dir
+    except Exception:
+        return None
 
 
 def _write_completion_manifest(
@@ -885,14 +1103,12 @@ def run(args: Any) -> Dict[str, Path]:
 
     output_dir: Optional[Path] = None
     try:
-        # When callers provide an explicit output, remove an old completion
-        # before validating or constructing anything else.  This keeps a stale
-        # success marker from surviving even an early runtime-argument failure.
-        if getattr(args, "output_dir", None) is not None:
-            output_dir = Path(args.output_dir).resolve()
-            output_dir.mkdir(parents=True, exist_ok=True)
-            _remove_completion(output_dir)
-        elif (
+        # Clear an explicitly supplied output before alias normalization.  An
+        # alias conflict is still an early failure and must not leave a stale
+        # completion marker behind.
+        output_dir = _pre_normalization_output_dir(args)
+        _normalize_args(args)
+        if output_dir is None and (
             getattr(args, "dataset", None) in DATASET_LOADERS
             and getattr(args, "model", None) in MODEL_NAMES
             and getattr(args, "mode", None) in RUN_MODES
@@ -923,6 +1139,7 @@ def run(args: Any) -> Dict[str, Path]:
                 backend.configure_trainable(args.mode, settings),
             )
             model_id, revision = _identity(backend, args.model)
+            experiment_model_id = _experiment_model_id(args, model_id)
             test_result = _collect_predictions(
                 backend,
                 test_loader,
@@ -949,6 +1166,7 @@ def run(args: Any) -> Dict[str, Path]:
                 backend.configure_trainable(args.mode, settings),
             )
             model_id, revision = _identity(backend, args.model)
+            experiment_model_id = _experiment_model_id(args, model_id)
             trainable_parameters = [
                 parameter for parameter in backend.model.parameters() if parameter.requires_grad
             ]
@@ -1003,6 +1221,7 @@ def run(args: Any) -> Dict[str, Path]:
                                 "val": total_val_steps + int(val_result["steps"]),
                                 "test": 0,
                             },
+                            experiment_model_id=experiment_model_id,
                         ),
                         checkpoint_path,
                     )
@@ -1032,6 +1251,7 @@ def run(args: Any) -> Dict[str, Path]:
                 args.device,
                 expected_epoch=best_epoch,
                 expected_val_loss=best_val_loss,
+                experiment_model_id=experiment_model_id,
             )
             test_result = _collect_predictions(
                 backend,
@@ -1065,6 +1285,7 @@ def run(args: Any) -> Dict[str, Path]:
                     revision,
                     epochs=int(args.epochs),
                     phase_steps=phase_steps,
+                    experiment_model_id=experiment_model_id,
                 ),
                 checkpoint_path,
             )
@@ -1085,6 +1306,8 @@ def run(args: Any) -> Dict[str, Path]:
                 "dataset": args.dataset,
                 "model": args.model,
                 "model_id": model_id,
+                "requested_model_id": experiment_model_id,
+                "experiment_model_id": experiment_model_id,
                 "model_revision": revision,
                 "effective_revision": revision,
                 "revision": revision,
@@ -1141,7 +1364,8 @@ def run(args: Any) -> Dict[str, Path]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", choices=sorted(DATASET_LOADERS))
+    parser.add_argument("--dataset", choices=sorted(DATASET_LOADERS), default=argparse.SUPPRESS)
+    parser.add_argument("--data", dest="data", default=argparse.SUPPRESS)
     parser.add_argument("--model", choices=list(MODEL_NAMES))
     parser.add_argument("--mode", choices=list(RUN_MODES))
     parser.add_argument("--list-models", action="store_true")
@@ -1149,18 +1373,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--seq_len", type=int)
     parser.add_argument("--pred_len", type=int)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=argparse.SUPPRESS)
+    parser.add_argument("--train_epochs", type=int, default=argparse.SUPPRESS)
     parser.add_argument("--max_train_steps", type=int, default=0)
     parser.add_argument("--max_eval_steps", type=int, default=0)
     parser.add_argument("--max_test_steps", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--smoke", action="store_true", default=argparse.SUPPRESS)
+    parser.add_argument("--debug", type=_argparse_debug_value, default=argparse.SUPPRESS)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--prefetch_factor", type=int, default=2)
     parser.add_argument("--learning_rate", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=2024)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--output_dir", type=Path)
+    parser.add_argument("--model_id", default=argparse.SUPPRESS)
+    parser.add_argument("--task_name", default=argparse.SUPPRESS)
+    parser.add_argument("--is_training", type=_argparse_is_training_value, default=argparse.SUPPRESS)
     parser.add_argument("--lora_r", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=8)
     parser.add_argument("--lora_dropout", type=float, default=0.0)
@@ -1170,17 +1399,46 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _argparse_debug_value(value: str) -> bool:
+    try:
+        return _parse_debug_value(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _argparse_is_training_value(value: str) -> bool:
+    try:
+        return _parse_is_training_value(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.list_models or args.list_modes:
         return args
+    try:
+        _normalize_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.dataset is None:
         parser.error("--dataset is required unless --list-models or --list-modes is used")
+    if args.dataset not in DATASET_LOADERS:
+        parser.error(
+            "--dataset/--data must be one of: "
+            + ", ".join(sorted(DATASET_LOADERS))
+        )
     if args.model is None:
         parser.error("--model is required unless --list-models or --list-modes is used")
     if args.mode is None:
         parser.error("--mode is required unless --list-models or --list-modes is used")
+    try:
+        validate_model_mode(args.model, args.mode)
+    except ValueError as exc:
+        # Reject unsupported model/mode pairs while parsing, before any
+        # configuration, dataset, or optional backend code is touched.
+        parser.error(str(exc))
     if args.seq_len is None or args.seq_len <= 0:
         parser.error("--seq_len must be positive")
     if args.pred_len is None or args.pred_len <= 0:

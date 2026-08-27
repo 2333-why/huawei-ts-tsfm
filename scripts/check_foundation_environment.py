@@ -35,11 +35,20 @@ EXPECTED_INTERPRETER = "/opt/data/private/penv/time/bin/python"
 EXPECTED_PYTHON = "3.8.18"
 MAX_NETWORK_TIMEOUT = 10.0
 
-PACKAGE_SPECS: Tuple[Tuple[str, str, str], ...] = (
+LEGACY_PACKAGE_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("torch", "torch", ">=2.3,<2.4"),
     ("transformers", "transformers", ">=4.46.2,<4.47"),
     ("peft", "peft", ">=0.13.2,<0.14"),
 )
+# The Python 3.10+ profile is intentionally separate: TimesFM 2.5's
+# Transformers class is not exposed by the legacy 4.46 runtime.  Keep
+# ``PACKAGE_SPECS`` as the historical alias for callers that inspect it.
+MODERN_PACKAGE_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("torch", "torch", ">=2.4,<3"),
+    ("transformers", "transformers", ">=5.3,<6"),
+    ("peft", "peft", ">=0.13.2,<1"),
+)
+PACKAGE_SPECS = LEGACY_PACKAGE_SPECS
 
 _DATASET_CONFIGS: Tuple[Tuple[str, Path], ...] = (
     ("skippd_luoyang", REPOSITORY_ROOT / "configs/datasets/skippd_luoyang.json"),
@@ -67,6 +76,37 @@ _REQUIRED_CACHE_FILES = {
         "ts_generation_mixin.py",
         "model.safetensors",
     ),
+    # The modern checkpoints intentionally keep a smaller, model-specific
+    # local-cache contract.  Presence is reported only; no loader is imported.
+    "Chronos2": (
+        "config.json",
+        "model.safetensors",
+    ),
+    "TiRex": (
+        "model.ckpt",
+    ),
+    "TimesFM": (
+        "config.json",
+        "model.safetensors",
+    ),
+}
+
+_MODEL_PYTHON_FLOORS = {
+    "Sundial": "3.8",
+    "TimeMoE": "3.8",
+    "Chronos2": "3.10",
+    "TiRex": "3.10",
+    "TimesFM": "3.10",
+}
+_MODERN_MODEL_PACKAGES = {
+    "Chronos2": "chronos-forecasting (chronos/Chronos2Pipeline)",
+    "TiRex": "tirex-ts (tirex/load_model)",
+    "TimesFM": "transformers (TimesFm2_5ModelForPrediction)",
+}
+_MODERN_MODEL_PACKAGE_SPECS = {
+    "Chronos2": ("chronos-forecasting", ">=2,<3"),
+    "TiRex": ("tirex-ts", ">=1,<2"),
+    "TimesFM": ("transformers", ">=5.3,<6"),
 }
 
 
@@ -413,10 +453,19 @@ def _cached_model_files(
     return {"complete": not missing, "missing_files": missing}
 
 
-def _probe_pinned_metadata(model_id: str, revision: str, timeout: float) -> Dict[str, Any]:
-    """Issue a credential-free HEAD request for the pinned config only."""
+def _probe_pinned_metadata(
+    model_id: str,
+    revision: str,
+    timeout: float,
+    filename: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Issue a credential-free HEAD request for one pinned cache file."""
 
-    url = "https://huggingface.co/{}/resolve/{}/config.json".format(model_id, revision)
+    if filename is None:
+        filename = "model.ckpt" if model_id == "NX-AI/TiRex" else "config.json"
+    if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename:
+        filename = "config.json"
+    url = "https://huggingface.co/{}/resolve/{}/{}".format(model_id, revision, filename)
     curl_binary = shutil.which("curl")
     if not curl_binary:
         return {"status": "fail", "network_status": "missing_curl"}
@@ -495,9 +544,12 @@ def _probe_pinned_metadata(model_id: str, revision: str, timeout: float) -> Dict
 def _interpreter_report() -> Dict[str, Any]:
     executable = str(getattr(sys, "executable", ""))
     python_version = _runtime_python_version()
+    supported_python = python_version == EXPECTED_PYTHON or _python_version_at_least(
+        python_version, "3.10"
+    )
     return {
         "status": "pass"
-        if executable == EXPECTED_INTERPRETER and python_version == EXPECTED_PYTHON
+        if executable == EXPECTED_INTERPRETER and supported_python
         else "fail",
         "expected_executable": EXPECTED_INTERPRETER,
         "expected_python": EXPECTED_PYTHON,
@@ -623,6 +675,55 @@ def _failed_dataset_paths() -> List[Dict[str, Any]]:
     ]
 
 
+def _python_version_at_least(value: Any, minimum: str) -> bool:
+    """Compare interpreter versions without importing model packages."""
+
+    def parts(raw: Any) -> Tuple[int, int, int]:
+        match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", str(raw))
+        if not match:
+            return (0, 0, 0)
+        return tuple(int(item or 0) for item in match.groups())  # type: ignore[return-value]
+
+    return parts(value) >= parts(minimum)
+
+
+def _package_specs_for_python(python_version: str) -> Tuple[Tuple[str, str, str], ...]:
+    """Select the complete dependency profile without importing model code."""
+
+    if _python_version_at_least(python_version, "3.10"):
+        return MODERN_PACKAGE_SPECS
+    return PACKAGE_SPECS
+
+
+def _model_package_report(model_name: str, package_items: Sequence[Mapping[str, Any]]) -> Tuple[str, str, Optional[str]]:
+    """Check optional distributions through metadata only, never importing them."""
+
+    package_spec = _MODERN_MODEL_PACKAGE_SPECS.get(model_name)
+    if package_spec is None:
+        return "pass", "-", None
+    distribution_name, version_specifier = package_spec
+    if distribution_name == "transformers":
+        version = next(
+            (
+                item.get("version")
+                for item in package_items
+                if item.get("name") == "transformers"
+            ),
+            None,
+        )
+    else:
+        try:
+            version = _package_version(distribution_name)
+        except Exception:
+            version = None
+    if version is None:
+        return "missing", distribution_name, None
+    version = str(version)
+    if not _version_satisfies(version, version_specifier):
+        return "incompatible", distribution_name, version
+    return "pass", distribution_name, version
+
+
 def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) -> Dict[str, Any]:
     """Collect a deterministic, credential-free report of local readiness."""
 
@@ -634,9 +735,11 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
         raise ValueError("network_timeout must be positive and at most 10 seconds")
 
     interpreter = _interpreter_report()
+    runtime_python = _runtime_python_version()
+    package_specs = _package_specs_for_python(runtime_python)
     packages: List[Dict[str, Any]] = []
     imported: Dict[str, Any] = {}
-    for display_name, distribution_name, expected in PACKAGE_SPECS:
+    for display_name, distribution_name, expected in package_specs:
         item, package = _package_report(display_name, distribution_name, expected)
         packages.append(item)
         imported[display_name] = package
@@ -666,7 +769,10 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
     models: List[Dict[str, Any]] = []
     for model_name in MODEL_NAMES:
         spec = get_model_spec(model_name)
-        required_files = _REQUIRED_CACHE_FILES[model_name]
+        required_files = _REQUIRED_CACHE_FILES.get(model_name, ("config.json",))
+        python_floor = _MODEL_PYTHON_FLOORS.get(model_name, EXPECTED_PYTHON)
+        python_blocked = not _python_version_at_least(runtime_python, python_floor)
+        package_status, package_name, package_version = _model_package_report(model_name, packages)
         try:
             raw_cache = _cached_model_files(
                 spec.model_id, spec.revision, required_files, cache_root_path
@@ -679,14 +785,32 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
             "model_id": spec.model_id,
             "revision": spec.revision,
             "required_files": list(required_files),
-            "status": "pass" if cache["complete"] else "fail",
+            "status": "pass" if cache["complete"] else "download_required",
             "cache_complete": cache["complete"],
             "missing_files": cache["missing_files"],
             "network_attempted": False,
             "network_status": "not_checked" if cache["complete"] else "offline",
             "download_required": not cache["complete"],
+            "python_floor": python_floor,
+            "python_status": "blocked" if python_blocked else "pass",
+            "package_status": package_status,
+            "package": package_name,
+            "package_version": package_version,
+            "block_reason": None,
         }
-        if not cache["complete"] and not offline:
+        if python_blocked:
+            item["status"] = "blocked"
+            item["network_status"] = "python_blocked"
+            item["block_reason"] = (
+                "requires Python >={} and package {} ({}); current Python {}"
+                .format(
+                    python_floor,
+                    _MODERN_MODEL_PACKAGES.get(model_name, package_name),
+                    package_status,
+                    runtime_python,
+                )
+            )
+        elif package_status == "pass" and not cache["complete"] and not offline:
             item["network_attempted"] = True
             try:
                 probe = _normalise_probe_result(
@@ -695,8 +819,15 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
             except Exception:
                 probe = {"status": "fail", "network_status": "connection_error"}
             item["network_status"] = probe["network_status"]
-            if probe["status"] == "pass":
-                item["status"] = "pass"
+        if not python_blocked and package_status != "pass":
+            item["status"] = "missing" if package_status == "missing" else "incompatible"
+            if item["block_reason"] is None:
+                item["block_reason"] = "required package {} is {}".format(
+                    package_name, package_status
+                )
+        # A reachable HEAD does not make an absent local checkpoint usable.
+        if not cache["complete"] and item["status"] == "pass":
+            item["status"] = "download_required"
         models.append(item)
 
     checks = [interpreter, cuda, cache_root_report]
@@ -800,12 +931,16 @@ def render_text(report: Dict[str, Any]) -> str:
                 if not isinstance(missing, Sequence) or isinstance(missing, (str, bytes)):
                     missing = []
                 lines.append(
-                    "model {}: {} cache_complete={} network={} download_required={} missing={}".format(
+                    "model {}: {} cache_complete={} network={} download_required={} python={} floor={} package={} reason={} missing={}".format(
                         _text(item.get("name")),
                         _text(item.get("status")),
                         _text(item.get("cache_complete")),
                         _text(item.get("network_status")),
                         _text(item.get("download_required")),
+                        _text(item.get("python_status")),
+                        _text(item.get("python_floor")),
+                        _text(item.get("package_status")),
+                        _text(item.get("block_reason")),
                         ",".join(_text(value) for value in missing),
                     )
                 )

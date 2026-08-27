@@ -37,8 +37,8 @@ if ! python_is_usable "$CONFIG_PYTHON"; then
     echo "CONFIG_PYTHON is not executable: $CONFIG_PYTHON" >&2
     exit 2
 fi
-if [[ ! -f "$ROOT_DIR/run_foundation_model.py" ]]; then
-    echo "run_foundation_model.py is missing" >&2
+if [[ ! -f "$ROOT_DIR/run.py" ]]; then
+    echo "run.py is missing" >&2
     exit 2
 fi
 
@@ -265,20 +265,20 @@ fi
 
 mapfile -t EXPECTED_MODELS <"$REGISTRY_MODELS"
 mapfile -t EXPECTED_MODES <"$REGISTRY_MODES"
-if (( ${#EXPECTED_MODELS[@]} != 2 || ${#EXPECTED_MODES[@]} != 4 )); then
-    echo "foundation registry must expose exactly two models and four modes" >&2
+if (( ${#EXPECTED_MODELS[@]} == 0 || ${#EXPECTED_MODES[@]} == 0 )); then
+    echo "foundation registry must expose at least one model and mode" >&2
     exit 2
 fi
 
 MODEL_FILE="$TEMP_DIR/models.txt"
 MODE_FILE="$TEMP_DIR/modes.txt"
 if ! CUDA_VISIBLE_DEVICES="${GPU_IDS[0]}" \
-    "$PYTHON" "$ROOT_DIR/run_foundation_model.py" --list-models >"$MODEL_FILE"; then
+    "$PYTHON" "$ROOT_DIR/run.py" --list-models >"$MODEL_FILE"; then
     echo "could not read the foundation model list" >&2
     exit 2
 fi
 if ! CUDA_VISIBLE_DEVICES="${GPU_IDS[0]}" \
-    "$PYTHON" "$ROOT_DIR/run_foundation_model.py" --list-modes >"$MODE_FILE"; then
+    "$PYTHON" "$ROOT_DIR/run.py" --list-modes >"$MODE_FILE"; then
     echo "could not read the foundation mode list" >&2
     exit 2
 fi
@@ -340,9 +340,9 @@ sys.path.insert(0, str(root))
 from models.registry import MODEL_NAMES, RUN_MODES, get_model_spec
 from models.tasks import iter_experiment_tasks
 
-if tuple(MODEL_NAMES) != ("Sundial", "TimeMoE"):
+if not MODEL_NAMES:
     raise SystemExit("unexpected foundation model catalog")
-if tuple(RUN_MODES) != ("zero_shot", "adapter", "full", "last_layer"):
+if not RUN_MODES:
     raise SystemExit("unexpected foundation mode catalog")
 actual = []
 for raw in task_path.read_text(encoding="utf-8").splitlines():
@@ -363,8 +363,8 @@ for task in iter_experiment_tasks():
         spec.model_id,
         spec.revision,
     ))
-if len(expected) != 32 or actual != expected or len(set(actual)) != 32:
-    raise SystemExit("foundation task matrix is not the exact unique 32-row catalog")
+if not expected or actual != expected or len(set(actual)) != len(expected):
+    raise SystemExit("foundation task matrix is not the exact unique registry catalog")
 PY
 then
     echo "foundation task matrix is not the exact supported catalog" >&2
@@ -439,8 +439,9 @@ for ordinal in "${!TASK_ROWS[@]}"; do
         "$pred_len" "$model_id" "$revision" >>"${GPU_QUEUES[$queue_index]}"
 done
 
-if (( ${#TASK_ROWS[@]} != 32 || ${#TASK_OUTPUTS[@]} != 32 )); then
-    echo "exactly 32 unique foundation tasks are required" >&2
+TASK_COUNT="${#TASK_ROWS[@]}"
+if (( TASK_COUNT == 0 || ${#TASK_OUTPUTS[@]} != TASK_COUNT )); then
+    echo "foundation task matrix must contain unique supported tasks" >&2
     exit 2
 fi
 
@@ -767,7 +768,7 @@ run_gpu_queue() {
                 run_args+=(--smoke)
             fi
             log_file="$output_dir/run.log"
-            if CUDA_VISIBLE_DEVICES="$gpu" "$PYTHON" "$ROOT_DIR/run_foundation_model.py" \
+            if CUDA_VISIBLE_DEVICES="$gpu" "$PYTHON" "$ROOT_DIR/run.py" \
                 "${run_args[@]}" >"$log_file" 2>&1; then
                 exit_code=0
             else
@@ -849,8 +850,8 @@ tasks = []
 for raw in task_path.read_text(encoding="utf-8").splitlines():
     setting, dataset, model, mode, seq, pred, _model_id, _revision = raw.split("\t")
     tasks.append((seq, pred, dataset, model, mode, str((root / setting / dataset / model / mode).resolve())))
-if len(tasks) != 32:
-    raise SystemExit("task count changed before summary publication")
+if not tasks:
+    raise SystemExit("task matrix is empty before summary publication")
 expected = {row[:5]: row[5] for row in tasks}
 data = summary_path.read_bytes()
 if not data.endswith(b"\n"):
@@ -861,8 +862,8 @@ except UnicodeDecodeError:
     raise SystemExit("summary is not UTF-8")
 if not lines or lines[0] != header_expected:
     raise SystemExit("summary header mismatch")
-if len(lines) != 33:
-    raise SystemExit("summary must contain exactly 32 result rows")
+if len(lines) != len(tasks) + 1:
+    raise SystemExit("summary row count does not match emitted task rows")
 seen = set()
 for line in lines[1:]:
     fields = line.split("\t")
@@ -907,4 +908,4 @@ if (( worker_failed != 0 )) || grep -q $'\tFAIL\t' "$SUMMARY_PATH"; then
     echo "one or more foundation-model tasks failed; see $SUMMARY_PATH" >&2
     exit 1
 fi
-echo "all 32 foundation-model tasks completed; summary: $SUMMARY_PATH"
+echo "all $TASK_COUNT foundation-model tasks completed; summary: $SUMMARY_PATH"
