@@ -731,6 +731,10 @@ class _FakeChronosPipeline:
 
     def predict_quantiles(self, inputs, prediction_length):
         self.predict_calls.append((inputs.detach().clone(), prediction_length))
+        if inputs.device.type != "cpu":
+            raise RuntimeError(
+                "cannot pin 'torch.cuda.FloatTensor' only dense CPU tensors can be pinned"
+            )
         batch = inputs.shape[0]
         means = [torch.tensor([[10.0, 11.0, 12.0, 13.0][:prediction_length]]) for _ in range(batch)]
         quantiles = [torch.zeros(1, prediction_length, 9) for _ in range(batch)]
@@ -912,6 +916,11 @@ def test_chronos2_moves_cpu_pipeline_forecast_to_backend_cuda_device(monkeypatch
     backend = Chronos2Backend(spec=spec, device="cuda:0")
     forecast = backend.predict(torch.tensor([[[1.0], [2.0], [3.0]]]), 2)
 
+    values, horizon = _FakeChronosPipeline.predict_calls[0]
+    assert values.device == torch.device("cpu")
+    assert values.is_contiguous()
+    assert values.shape == (1, 1, 3)
+    assert horizon == 2
     assert forecast.device == torch.device("cuda:0")
     assert forecast.shape == (1, 2, 1)
     assert torch.isfinite(forecast).all()

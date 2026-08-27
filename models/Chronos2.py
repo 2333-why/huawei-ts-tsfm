@@ -132,9 +132,7 @@ class Chronos2Backend:
     def predict(self, history: torch.Tensor, pred_len: int) -> torch.Tensor:
         history = _validate_history(history)
         pred_len = _validate_pred_len(pred_len)
-        if history.device != self.device:
-            history = history.to(self.device)
-        context = history[..., 0].unsqueeze(1).contiguous()
+        context = history[..., 0].unsqueeze(1).contiguous().to(device="cpu")
         with torch.inference_mode():
             predict_quantiles = getattr(self.pipeline, "predict_quantiles", None)
             if callable(predict_quantiles):
@@ -145,7 +143,7 @@ class Chronos2Backend:
                     raise ValueError("Chronos2 pipeline has no point prediction method")
                 output = predict(context, prediction_length=pred_len)
         forecast = _point_tensor(output, batch=int(history.shape[0]), pred_len=pred_len)
-        return forecast.to(device=history.device)
+        return forecast.to(device=self.device)
 
     def training_loss(
         self,
