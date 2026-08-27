@@ -34,6 +34,9 @@ SCHEMA_VERSION = "foundation-environment-v1"
 EXPECTED_INTERPRETER = "/opt/data/private/penv/time/bin/python"
 EXPECTED_PYTHON = "3.8.18"
 MAX_NETWORK_TIMEOUT = 10.0
+LEGACY_PROFILE = "legacy"
+MODERN_PROFILE = "modern"
+_DEPENDENCY_PROFILES = (LEGACY_PROFILE, MODERN_PROFILE)
 
 LEGACY_PACKAGE_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("torch", "torch", ">=2.3,<2.4"),
@@ -208,7 +211,12 @@ def _package_report(
     display_name: str,
     distribution_name: str,
     expected: str,
+    profile: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[Any]]:
+    if profile is None:
+        profile = _dependency_profile_for_python(_runtime_python_version())
+    if profile not in _DEPENDENCY_PROFILES:
+        raise ValueError("unknown dependency profile: {}".format(profile))
     item: Dict[str, Any] = {
         "name": display_name,
         "status": "pass",
@@ -248,7 +256,12 @@ def _package_report(
             item["cuda_build"] = str(build) if build is not None else None
         except Exception:
             item["cuda_build"] = None
-        if item["cuda_build"] != "11.8":
+        if profile == LEGACY_PROFILE:
+            if item["cuda_build"] != "11.8":
+                item["status"] = "fail"
+        elif not isinstance(item["cuda_build"], str) or not item["cuda_build"].strip():
+            # Modern environments may use a different CUDA build, but a
+            # missing/empty build is still not a usable Torch installation.
             item["status"] = "fail"
     return item, imported
 
@@ -598,18 +611,25 @@ def _probe_pinned_metadata(
     return {"status": "fail", "network_status": "http_{}".format(status), "http_status": status}
 
 
-def _interpreter_report() -> Dict[str, Any]:
+def _interpreter_report(profile: Optional[str] = None) -> Dict[str, Any]:
     executable = str(getattr(sys, "executable", ""))
     python_version = _runtime_python_version()
-    supported_python = python_version == EXPECTED_PYTHON or _python_version_at_least(
-        python_version, "3.10"
-    )
+    if profile is None:
+        profile = _dependency_profile_for_python(python_version)
+    if profile not in _DEPENDENCY_PROFILES:
+        raise ValueError("unknown dependency profile: {}".format(profile))
+    if profile == MODERN_PROFILE:
+        status = _python_version_at_least(python_version, "3.10") and bool(executable.strip())
+        expected_executable = "any Python >=3.10 executable"
+        expected_python = ">=3.10"
+    else:
+        status = executable == EXPECTED_INTERPRETER and python_version == EXPECTED_PYTHON
+        expected_executable = EXPECTED_INTERPRETER
+        expected_python = EXPECTED_PYTHON
     return {
-        "status": "pass"
-        if executable == EXPECTED_INTERPRETER and supported_python
-        else "fail",
-        "expected_executable": EXPECTED_INTERPRETER,
-        "expected_python": EXPECTED_PYTHON,
+        "status": "pass" if status else "fail",
+        "expected_executable": expected_executable,
+        "expected_python": expected_python,
         "executable": executable,
         "python": python_version,
     }
@@ -744,10 +764,16 @@ def _python_version_at_least(value: Any, minimum: str) -> bool:
     return parts(value) >= parts(minimum)
 
 
+def _dependency_profile_for_python(python_version: str) -> str:
+    """Choose the explicit dependency/interpreter policy for one Python version."""
+
+    return MODERN_PROFILE if _python_version_at_least(python_version, "3.10") else LEGACY_PROFILE
+
+
 def _package_specs_for_python(python_version: str) -> Tuple[Tuple[str, str, str], ...]:
     """Select the complete dependency profile without importing model code."""
 
-    if _python_version_at_least(python_version, "3.10"):
+    if _dependency_profile_for_python(python_version) == MODERN_PROFILE:
         return MODERN_PACKAGE_SPECS
     return PACKAGE_SPECS
 
@@ -793,13 +819,16 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
         raise ValueError("network_timeout must be positive and at most 10 seconds")
 
     _validate_model_descriptors()
-    interpreter = _interpreter_report()
     runtime_python = _runtime_python_version()
+    profile = _dependency_profile_for_python(runtime_python)
+    interpreter = _interpreter_report(profile=profile)
     package_specs = _package_specs_for_python(runtime_python)
     packages: List[Dict[str, Any]] = []
     imported: Dict[str, Any] = {}
     for display_name, distribution_name, expected in package_specs:
-        item, package = _package_report(display_name, distribution_name, expected)
+        item, package = _package_report(
+            display_name, distribution_name, expected, profile=profile
+        )
         packages.append(item)
         imported[display_name] = package
 

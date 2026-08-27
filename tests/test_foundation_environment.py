@@ -1261,3 +1261,43 @@ def test_modern_peft_floor_rejects_legacy_release_on_modern_python(
     assert peft["status"] == "fail"
     assert peft["version_status"] == "fail"
     assert report["ok"] is False
+
+
+def test_modern_interpreter_profile_accepts_its_current_executable(
+    environment_module, monkeypatch
+):
+    module = environment_module
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.11.0")
+    monkeypatch.setattr(module.sys, "executable", "/repo/.venv-tsfm-modern/bin/python")
+
+    report = module._interpreter_report()
+
+    assert report["status"] == "pass"
+    assert report["executable"] == "/repo/.venv-tsfm-modern/bin/python"
+    assert report["python"] == "3.11.0"
+
+
+@pytest.mark.parametrize(
+    ("cuda_build", "expected_status"),
+    [("12.1", "pass"), (None, "fail")],
+)
+def test_modern_torch_profile_requires_usable_cuda_build_but_not_legacy_pin(
+    environment_module, monkeypatch, tmp_path, cuda_build, expected_status
+):
+    module = environment_module
+    fake_torch = _install_happy_fakes(monkeypatch, module, tmp_path)
+    fake_torch.version = SimpleNamespace(cuda=cuda_build)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.11.0")
+    monkeypatch.setattr(module.sys, "executable", "/repo/.venv-tsfm-modern/bin/python")
+    versions = {
+        "torch": "2.4.1",
+        "transformers": "5.3.0",
+        "peft": "0.18.1",
+    }
+    monkeypatch.setattr(module, "_package_version", lambda name: versions[name])
+
+    report = module.collect_environment(offline=True)
+
+    torch_item = next(item for item in report["packages"] if item["name"] == "torch")
+    assert torch_item["cuda_build"] == cuda_build
+    assert torch_item["status"] == expected_status
