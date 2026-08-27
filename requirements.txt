@@ -5,3 +5,5 @@ pyarrow>=10
 PyYAML>=6,<7
 pvlib>=0.10.5,<0.12
 torch>=2.0
+transformers>=4.46.2,<4.47
+peft>=0.13.2,<0.14
