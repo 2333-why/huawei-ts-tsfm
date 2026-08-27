@@ -8,7 +8,7 @@ import pytest
 
 
 def test_registry_exposes_fixed_catalog_and_immutable_specs():
-    from foundation_models import MODEL_NAMES, RUN_MODES, get_model_spec
+    from models import MODEL_NAMES, RUN_MODES, get_model_spec
 
     assert MODEL_NAMES == ("Sundial", "TimeMoE")
     assert RUN_MODES == ("zero_shot", "adapter", "full", "last_layer")
@@ -17,13 +17,13 @@ def test_registry_exposes_fixed_catalog_and_immutable_specs():
         "Sundial": {
             "model_id": "thuml/sundial-base-128m",
             "revision": "3212e42564493f520593e5414af4367fc4b49226",
-            "entrypoint": "foundation_models.backends:SundialBackend",
+            "entrypoint": "models.Sundial:SundialBackend",
             "last_layer_selector": "flow_loss",
         },
         "TimeMoE": {
             "model_id": "Maple728/TimeMoE-50M",
             "revision": "446753ee48ff3726d0606a81d0092d54acee995e",
-            "entrypoint": "foundation_models.backends:TimeMoEBackend",
+            "entrypoint": "models.TimeMoE:TimeMoEBackend",
             "last_layer_selector": "lm_heads",
         },
     }
@@ -42,7 +42,7 @@ def test_registry_exposes_fixed_catalog_and_immutable_specs():
 def test_registry_import_has_no_optional_dependency_side_effect():
     probe = (
         "import sys\n"
-        "import foundation_models.registry\n"
+        "import models.registry\n"
         "assert 'transformers' not in sys.modules\n"
         "assert 'peft' not in sys.modules\n"
     )
@@ -56,7 +56,7 @@ def test_registry_import_has_no_optional_dependency_side_effect():
 
 
 def test_unknown_model_name_reports_available_catalog():
-    from foundation_models import get_model_spec
+    from models import get_model_spec
 
     with pytest.raises(ValueError, match="Sundial.*TimeMoE"):
         get_model_spec("unknown")

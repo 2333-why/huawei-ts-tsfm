@@ -1,9 +1,8 @@
-"""Shared protocol and output-shape checks for foundation-model backends."""
+"""Shared backend protocol and strict forecast validation."""
 
 from __future__ import annotations
 
 from numbers import Integral
-from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import torch
@@ -15,6 +14,7 @@ class FoundationBackend(Protocol):
 
     model_name: str
     model_id: str
+    revision: str
     model: torch.nn.Module
 
     def predict(self, history: torch.Tensor, pred_len: int) -> torch.Tensor:
@@ -30,9 +30,6 @@ class FoundationBackend(Protocol):
 
     def configure_trainable(self, mode: str, lora: Any) -> Any:
         """Apply a trainability policy and return its audit report."""
-
-    def save(self, path: Path) -> None:
-        """Save backend state to ``path``."""
 
 
 def _positive_integer(value: Any, name: str) -> int:

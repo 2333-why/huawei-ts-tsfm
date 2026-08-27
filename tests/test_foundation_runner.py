@@ -247,7 +247,7 @@ def _install_fakes(monkeypatch, tmp_path):
 
 def test_list_commands_are_lazy_and_exact(capsys, monkeypatch):
     import run_foundation_model
-    from foundation_models import MODEL_NAMES, RUN_MODES
+    from models import MODEL_NAMES, RUN_MODES
 
     monkeypatch.setattr(
         run_foundation_model,

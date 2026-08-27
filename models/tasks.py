@@ -1,11 +1,11 @@
-"""Deterministic experiment task matrix for foundation-model runs."""
+"""Deterministic capability-filtered experiment task matrix."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterator, Tuple
 
-from .registry import MODEL_NAMES, RUN_MODES
+from .registry import MODEL_NAMES, get_model_spec
 
 
 @dataclass(frozen=True)
@@ -29,11 +29,11 @@ _TASK_SHAPES: Tuple[Tuple[str, str, int, int], ...] = (
 
 
 def iter_experiment_tasks() -> Iterator[ExperimentTask]:
-    """Yield every fixed task in a stable setting/dataset/model/mode order."""
+    """Yield fixed windows and only modes supported by each model."""
 
     for setting, dataset, seq_len, pred_len in _TASK_SHAPES:
         for model in MODEL_NAMES:
-            for mode in RUN_MODES:
+            for mode in get_model_spec(model).supported_modes:
                 yield ExperimentTask(
                     setting=setting,
                     dataset=dataset,

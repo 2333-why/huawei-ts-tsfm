@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from foundation_models.registry import FoundationModelSpec
+from models.registry import FoundationModelSpec
 
 
 class TinyTrainableModel(nn.Module):
@@ -36,7 +36,7 @@ def _spec(selector: str = "output") -> FoundationModelSpec:
 
 
 def test_zero_shot_freezes_all_and_report_is_deterministic():
-    from foundation_models.trainability import configure_trainable
+    from models.trainability import configure_trainable
 
     model = TinyTrainableModel()
     report = configure_trainable(model, _spec(), "zero_shot")
@@ -51,7 +51,7 @@ def test_zero_shot_freezes_all_and_report_is_deterministic():
 
 
 def test_full_unfreezes_every_parameter_and_reports_sorted_names():
-    from foundation_models.trainability import configure_trainable
+    from models.trainability import configure_trainable
 
     model = TinyTrainableModel()
     report = configure_trainable(model, _spec(), "full")
@@ -66,7 +66,7 @@ def test_full_unfreezes_every_parameter_and_reports_sorted_names():
 
 
 def test_last_layer_matches_only_the_exact_output_subtree():
-    from foundation_models.trainability import configure_trainable
+    from models.trainability import configure_trainable
 
     model = TinyTrainableModel()
     report = configure_trainable(model, _spec("output"), "last_layer")
@@ -85,7 +85,7 @@ def test_last_layer_matches_only_the_exact_output_subtree():
 
 
 def test_adapter_injects_real_lora_parameters_and_freezes_base():
-    from foundation_models.trainability import LoraSettings, configure_trainable
+    from models.trainability import LoraSettings, configure_trainable
 
     model = TinyTrainableModel()
     report = configure_trainable(
@@ -108,7 +108,7 @@ def test_adapter_injects_real_lora_parameters_and_freezes_base():
 def test_adapter_does_not_import_peft_until_configuration():
     probe = (
         "import sys\n"
-        "import foundation_models.trainability\n"
+        "import models.trainability\n"
         "assert 'peft' not in sys.modules\n"
     )
     result = subprocess.run(
@@ -122,14 +122,14 @@ def test_adapter_does_not_import_peft_until_configuration():
 
 @pytest.mark.parametrize("mode", ["unknown", "", "FULL"])
 def test_unknown_trainability_mode_is_rejected(mode):
-    from foundation_models.trainability import configure_trainable
+    from models.trainability import configure_trainable
 
     with pytest.raises(ValueError, match="mode"):
         configure_trainable(TinyTrainableModel(), _spec(), mode)
 
 
 def test_last_layer_rejects_empty_selector_and_selector_covering_every_parameter():
-    from foundation_models.trainability import configure_trainable
+    from models.trainability import configure_trainable
 
     with pytest.raises(ValueError, match="selector"):
         configure_trainable(TinyTrainableModel(), _spec(""), "last_layer")
@@ -141,7 +141,7 @@ def test_last_layer_rejects_empty_selector_and_selector_covering_every_parameter
 
 
 def test_adapter_rejects_models_without_matching_target_modules():
-    from foundation_models.trainability import configure_trainable
+    from models.trainability import configure_trainable
 
     class NoTarget(nn.Module):
         def __init__(self):
@@ -155,7 +155,7 @@ def test_adapter_rejects_models_without_matching_target_modules():
 def test_adapter_rejects_injection_that_adds_no_lora_parameters(monkeypatch):
     import peft
 
-    from foundation_models import trainability
+    from models import trainability
 
     monkeypatch.setattr(peft, "inject_adapter_in_model", lambda config, model: model)
     with pytest.raises(ValueError, match="no trainable|LoRA"):
@@ -167,7 +167,7 @@ def test_adapter_rejects_injection_that_adds_no_lora_parameters(monkeypatch):
 def test_adapter_rejects_base_parameter_leakage(monkeypatch):
     import peft
 
-    from foundation_models import trainability
+    from models import trainability
 
     def leak_base_parameter(config, model):
         model.backbone.q_proj.bias.requires_grad_(True)
@@ -181,7 +181,7 @@ def test_adapter_rejects_base_parameter_leakage(monkeypatch):
 
 
 def test_full_rejects_an_audit_when_unfreeze_fails(monkeypatch):
-    from foundation_models import trainability
+    from models import trainability
 
     model = TinyTrainableModel()
     for parameter in model.parameters():
@@ -192,7 +192,7 @@ def test_full_rejects_an_audit_when_unfreeze_fails(monkeypatch):
 
 
 def test_zero_parameter_models_are_rejected():
-    from foundation_models.trainability import configure_trainable
+    from models.trainability import configure_trainable
 
     with pytest.raises(ValueError, match="parameter"):
         configure_trainable(nn.Identity(), _spec(), "zero_shot")
@@ -201,7 +201,7 @@ def test_zero_parameter_models_are_rejected():
 def test_report_is_frozen():
     from dataclasses import FrozenInstanceError
 
-    from foundation_models.trainability import configure_trainable
+    from models.trainability import configure_trainable
 
     report = configure_trainable(TinyTrainableModel(), _spec(), "full")
     with pytest.raises(FrozenInstanceError):
@@ -210,7 +210,7 @@ def test_report_is_frozen():
 
 @pytest.mark.parametrize("mode", ["zero_shot", "adapter", "full", "last_layer"])
 def test_optimizer_step_changes_only_parameters_allowed_by_mode(mode):
-    from foundation_models.trainability import LoraSettings, configure_trainable
+    from models.trainability import LoraSettings, configure_trainable
 
     model = TinyTrainableModel()
     configure_trainable(

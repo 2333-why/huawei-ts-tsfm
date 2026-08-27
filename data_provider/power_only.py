@@ -1,16 +1,88 @@
-"""Dedicated power-only Parquet dataset for the pure time-series runner."""
+"""Dedicated power-only Parquet dataset and batch contract for TSFM runs."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from numbers import Integral
 from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import pandas as pd
+import torch
 import yaml
 from torch.utils.data import Dataset
+
+
+Tensor = torch.Tensor
+
+
+@dataclass(frozen=True)
+class PowerBatch:
+    """The power history, target, and valid-target mask for one batch."""
+
+    x: Tensor
+    y: Tensor
+    mask: Tensor
+
+
+def _as_float_tensor(value: Any, *, name: str, device: torch.device) -> Tensor:
+    try:
+        return torch.as_tensor(value, device=device, dtype=torch.float32)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise ValueError(f"{name} must be convertible to a floating-point tensor") from exc
+
+
+def _target_mask(batch: Mapping, target: Tensor, device: torch.device) -> Tensor:
+    value = batch.get("target_mask")
+    if value is None:
+        return torch.ones(target.shape[:2], dtype=torch.bool, device=device)
+
+    mask = torch.as_tensor(value, device=device, dtype=torch.bool)
+    if mask.ndim == 3 and mask.shape[-1] == 1:
+        mask = mask[..., 0]
+    if mask.ndim != 2 or tuple(mask.shape) != tuple(target.shape[:2]):
+        raise ValueError(
+            "target_mask must have shape "
+            f"[batch, target_len] matching {tuple(target.shape[:2])}, got {tuple(mask.shape)}"
+        )
+    return mask
+
+
+def power_only_batch(batch: Any, device: torch.device) -> PowerBatch:
+    """Extract normalized power tensors from a collated dataset mapping."""
+
+    if not isinstance(batch, Mapping):
+        raise ValueError("dataset batch must be a mapping")
+    if "history" not in batch or "target" not in batch:
+        raise ValueError("dataset batch mapping must contain history and target")
+    raw_x, raw_y = batch["history"], batch["target"]
+
+    batch_x = _as_float_tensor(raw_x, name="history", device=device)
+    batch_y = _as_float_tensor(raw_y, name="target", device=device)
+    if batch_x.ndim != 3 or batch_x.shape[-1] != 1:
+        raise ValueError(
+            "expected [B, seq_len, 1] history with one power channel, "
+            f"got {tuple(batch_x.shape)}"
+        )
+    if batch_y.ndim != 3 or batch_y.shape[-1] != 1:
+        raise ValueError(
+            "expected [B, pred_len, 1] target with one power channel, "
+            f"got {tuple(batch_y.shape)}"
+        )
+    if batch_x.shape[0] != batch_y.shape[0]:
+        raise ValueError(
+            "history and target batch sizes must match, got "
+            f"{batch_x.shape[0]} and {batch_y.shape[0]}"
+        )
+
+    return PowerBatch(
+        x=batch_x,
+        y=batch_y,
+        mask=_target_mask(batch, batch_y, device),
+    )
 
 
 def load_power_only_config(path: Union[str, Path]) -> Dict[str, Any]:
@@ -405,4 +477,9 @@ class PowerOnlyParquetDataset(Dataset):
         return np.asarray(values) * self.power_scale
 
 
-__all__ = ["PowerOnlyParquetDataset", "load_power_only_config"]
+__all__ = [
+    "PowerBatch",
+    "PowerOnlyParquetDataset",
+    "load_power_only_config",
+    "power_only_batch",
+]

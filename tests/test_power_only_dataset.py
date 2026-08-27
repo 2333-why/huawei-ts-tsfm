@@ -9,7 +9,7 @@ import pytest
 from torch.utils.data import DataLoader
 
 from data_provider.power_only import PowerOnlyParquetDataset
-from models.tslib_adapter import power_only_batch, prepare_model_inputs
+from data_provider.power_only import power_only_batch
 
 
 def _write_power_fixture(
@@ -286,17 +286,3 @@ def test_power_only_batch_rejects_legacy_tuple_and_multichannel_mapping():
             },
             device="cpu",
         )
-
-
-def test_prepare_model_inputs_rejects_multichannel_history_and_special_models():
-    with pytest.raises(ValueError, match="one power channel"):
-        prepare_model_inputs(
-            "Transformer", np.zeros((1, 2, 2), dtype=np.float32), label_len=1, pred_len=1
-        )
-
-    history = np.zeros((1, 2, 1), dtype=np.float32)
-    inputs = prepare_model_inputs("MultiPatchFormer", history, label_len=1, pred_len=1)
-    assert inputs[0].shape == (1, 2, 1)
-    assert inputs[1] is None
-    assert inputs[2].shape == (1, 2, 1)
-    assert inputs[3] is None

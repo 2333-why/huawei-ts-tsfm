@@ -253,7 +253,7 @@ root = Path(sys.argv[1])
 models_path = Path(sys.argv[2])
 modes_path = Path(sys.argv[3])
 sys.path.insert(0, str(root))
-from foundation_models.registry import MODEL_NAMES, RUN_MODES
+from models.registry import MODEL_NAMES, RUN_MODES
 
 models_path.write_text("".join(name + "\n" for name in MODEL_NAMES), encoding="utf-8")
 modes_path.write_text("".join(mode + "\n" for mode in RUN_MODES), encoding="utf-8")
@@ -308,8 +308,8 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 sys.path.insert(0, str(root))
-from foundation_models.registry import get_model_spec
-from foundation_models.tasks import iter_experiment_tasks
+from models.registry import get_model_spec
+from models.tasks import iter_experiment_tasks
 
 for task in iter_experiment_tasks():
     spec = get_model_spec(task.model)
@@ -337,8 +337,8 @@ from pathlib import Path
 root = Path(sys.argv[1])
 task_path = Path(sys.argv[2])
 sys.path.insert(0, str(root))
-from foundation_models.registry import MODEL_NAMES, RUN_MODES, get_model_spec
-from foundation_models.tasks import iter_experiment_tasks
+from models.registry import MODEL_NAMES, RUN_MODES, get_model_spec
+from models.tasks import iter_experiment_tasks
 
 if tuple(MODEL_NAMES) != ("Sundial", "TimeMoE"):
     raise SystemExit("unexpected foundation model catalog")

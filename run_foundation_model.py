@@ -1,8 +1,8 @@
 """Run one foundation-model power forecasting experiment.
 
-The foundation runner deliberately has its own lifecycle.  It shares only the
-stable prediction/metric/hash primitives with ``run_time_series`` and keeps
-optional model dependencies behind backend construction.
+The runner deliberately has its own lifecycle and shares stable
+prediction/metric/hash primitives from ``utils.artifacts``. Optional model
+dependencies remain behind backend construction.
 """
 
 from __future__ import annotations
@@ -25,12 +25,13 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from data_provider.power_only import PowerOnlyParquetDataset
-from foundation_models.factory import build_backend
-from foundation_models.registry import MODEL_NAMES, RUN_MODES, get_model_spec
-from foundation_models.trainability import LoraSettings
-from models.tslib_adapter import power_only_batch
-from run_time_series import _json_safe, _sha256, _write_predictions
+from data_provider.power_only import PowerOnlyParquetDataset, power_only_batch
+from models.factory import build_backend
+from models.registry import MODEL_NAMES, RUN_MODES, get_model_spec
+from models.trainability import LoraSettings
+from utils.artifacts import json_safe as _json_safe
+from utils.artifacts import sha256 as _sha256
+from utils.artifacts import write_predictions as _write_predictions
 
 
 REPO_ROOT = Path(__file__).resolve().parent

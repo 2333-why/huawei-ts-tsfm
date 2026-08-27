@@ -4,8 +4,8 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from foundation_models import MODEL_NAMES, RUN_MODES, iter_experiment_tasks
-from foundation_models.tasks import ExperimentTask
+from models import MODEL_NAMES, RUN_MODES, iter_experiment_tasks
+from models.tasks import ExperimentTask
 
 
 def test_task_matrix_has_expected_cardinality_and_is_deterministic():

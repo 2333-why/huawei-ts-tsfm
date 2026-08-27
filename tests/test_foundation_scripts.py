@@ -52,7 +52,7 @@ def _fake_python(tmp_path: Path, repo: Path) -> Path:
             import time
 
             sys.path.insert(0, os.environ["FAKE_REPO"])
-            from foundation_models.registry import get_model_spec
+            from models.registry import get_model_spec
 
             COMPLETION_HEADER = (
                 "schema_version\tdataset\tmodel\tseq_len\tpred_len\toutput_dir\t"
@@ -217,11 +217,25 @@ def _harness(tmp_path: Path):
 def _copied_default_harness(tmp_path: Path):
     source_repo = Path(__file__).resolve().parents[1]
     copied_repo = tmp_path / "copied repo"
-    shutil.copytree(
-        source_repo,
-        copied_repo,
-        ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
-    )
+    copied_repo.mkdir()
+    for relative in (
+        "models",
+        "configs",
+        "run_foundation_model.py",
+        "scripts/run_all_foundation_models_2gpu.sh",
+        "scripts/smoke_all_foundation_models_2gpu.sh",
+    ):
+        source = source_repo / relative
+        destination = copied_repo / relative
+        if source.is_dir():
+            shutil.copytree(
+                source,
+                destination,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
     fake = _fake_python(tmp_path, copied_repo)
     skippd = tmp_path / "default-skippd.parquet"
     pvod = tmp_path / "default-pvod.parquet"
@@ -492,7 +506,7 @@ def test_registry_revision_change_retries_exactly_one_model(tmp_path):
         cwd=repo, env=env, text=True, capture_output=True, timeout=30,
     ).returncode == 0
     before = len([event for event in _events(record) if event["kind"] == "run"])
-    registry = repo / "foundation_models" / "registry.py"
+    registry = repo / "models" / "registry.py"
     original = registry.read_text(encoding="utf-8")
     changed = original.replace(
         "3212e42564493f520593e5414af4367fc4b49226",

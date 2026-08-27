@@ -1,9 +1,4 @@
-"""Deterministic trainability policies and parameter audits.
-
-The adapter policy imports PEFT only while it is being configured.  Keeping
-that import lazy lets catalog and inference-only operations run without the
-optional dependency installed.
-"""
+"""Deterministic trainability policies and parameter audits."""
 
 from __future__ import annotations
 
@@ -13,16 +8,10 @@ from typing import Any, Optional, Sequence, Tuple
 
 from torch import nn
 
+from .registry import DEFAULT_ADAPTER_TARGET_MODULES
 
-ADAPTER_TARGET_MODULES = (
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj",
-)
+
+ADAPTER_TARGET_MODULES = DEFAULT_ADAPTER_TARGET_MODULES
 _RUN_MODES = ("zero_shot", "adapter", "full", "last_layer")
 
 
@@ -51,14 +40,10 @@ class TrainabilityReport:
 
     @property
     def total_params(self) -> int:
-        """Compatibility alias for callers that use the shorter spelling."""
-
         return self.total_parameters
 
     @property
     def trainable_params(self) -> int:
-        """Compatibility alias for callers that use the shorter spelling."""
-
         return self.trainable_parameters
 
     @property
@@ -137,7 +122,9 @@ def _audit_report(
         )
     if mode == "adapter":
         if not actual_names:
-            raise ValueError("adapter trainability audit failed: LoRA injection added no trainable parameters")
+            raise ValueError(
+                "adapter trainability audit failed: LoRA injection added no trainable parameters"
+            )
         leaked = [name for name in actual_names if "lora_" not in name]
         if leaked:
             raise ValueError(
@@ -147,13 +134,14 @@ def _audit_report(
     return report
 
 
-def _adapter_module_matches(name: str) -> bool:
-    return any(name == suffix or name.endswith("." + suffix) for suffix in ADAPTER_TARGET_MODULES)
+def _adapter_module_matches(name: str, target_modules: Sequence[str]) -> bool:
+    return any(name == suffix or name.endswith("." + suffix) for suffix in target_modules)
 
 
 def _configure_adapter(
     model: nn.Module,
     lora_settings: LoraSettings,
+    target_modules: Sequence[str],
 ) -> TrainabilityReport:
     if lora_settings.bias != "none":
         raise ValueError(
@@ -162,16 +150,15 @@ def _configure_adapter(
     matched_modules = [
         name
         for name, module in model.named_modules()
-        if name and _adapter_module_matches(name) and isinstance(module, nn.Linear)
+        if name and _adapter_module_matches(name, target_modules) and isinstance(module, nn.Linear)
     ]
     if not matched_modules:
         raise ValueError(
             "adapter configuration found no matching nn.Linear target modules; "
-            "expected one of q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj"
+            "expected configured transformer linear target modules"
         )
 
     try:
-        # This is intentionally the only PEFT import in this module.
         from peft import LoraConfig, inject_adapter_in_model
     except ImportError as exc:
         raise ImportError(
@@ -185,7 +172,7 @@ def _configure_adapter(
             lora_dropout=lora_settings.lora_dropout,
             bias=lora_settings.bias,
             task_type=lora_settings.task_type,
-            target_modules=list(ADAPTER_TARGET_MODULES),
+            target_modules=list(target_modules),
             fan_in_fan_out=lora_settings.fan_in_fan_out,
         )
         inject_adapter_in_model(config, model)
@@ -206,11 +193,7 @@ def configure_trainable(
     mode: str,
     lora_settings: Optional[LoraSettings] = None,
 ) -> TrainabilityReport:
-    """Apply ``mode`` to ``model`` in place and return a parameter audit.
-
-    ``spec.last_layer_selector`` is interpreted as an exact module prefix;
-    arbitrary substring matches are deliberately not accepted.
-    """
+    """Apply ``mode`` to ``model`` in place and return a parameter audit."""
 
     if mode not in _RUN_MODES:
         raise ValueError(
@@ -268,7 +251,10 @@ def configure_trainable(
     if not isinstance(lora_settings, LoraSettings):
         raise ValueError("adapter lora_settings must be a LoraSettings instance")
     _freeze_all(parameters)
-    return _configure_adapter(model, lora_settings)
+    target_modules = getattr(spec, "adapter_target_modules", ADAPTER_TARGET_MODULES)
+    if not isinstance(target_modules, (tuple, list)) or not target_modules:
+        raise ValueError("adapter requires nonempty adapter_target_modules")
+    return _configure_adapter(model, lora_settings, tuple(target_modules))
 
 
 __all__ = [

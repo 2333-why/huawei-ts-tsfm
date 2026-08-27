@@ -11,7 +11,7 @@ from torch import nn
 
 
 def test_ensure_forecast_shape_adds_only_single_channel():
-    from foundation_models.base import ensure_forecast_shape
+    from models.base import ensure_forecast_shape
 
     result = ensure_forecast_shape(torch.tensor([[1.0, 2.0]]), batch=1, pred_len=2)
 
@@ -20,7 +20,7 @@ def test_ensure_forecast_shape_adds_only_single_channel():
 
 
 def test_ensure_forecast_shape_accepts_exact_three_dimensional_tensor():
-    from foundation_models.base import ensure_forecast_shape
+    from models.base import ensure_forecast_shape
 
     value = torch.tensor([[[1.0], [2.0]]])
 
@@ -42,7 +42,7 @@ def test_ensure_forecast_shape_accepts_exact_three_dimensional_tensor():
     ],
 )
 def test_ensure_forecast_shape_rejects_invalid_outputs(value):
-    from foundation_models.base import ensure_forecast_shape
+    from models.base import ensure_forecast_shape
 
     with pytest.raises(ValueError):
         ensure_forecast_shape(value, batch=1, pred_len=2)
@@ -51,9 +51,9 @@ def test_ensure_forecast_shape_rejects_invalid_outputs(value):
 def test_registry_and_factory_import_without_optional_model_dependencies():
     probe = (
         "import sys\n"
-        "import foundation_models.registry\n"
-        "import foundation_models.factory\n"
-        "import foundation_models.backends\n"
+        "import models.registry\n"
+        "import models.factory\n"
+        "import models.Sundial\n"
         "assert 'transformers' not in sys.modules\n"
         "assert 'peft' not in sys.modules\n"
     )
@@ -68,8 +68,8 @@ def test_registry_and_factory_import_without_optional_model_dependencies():
 
 
 def test_factory_resolves_entrypoint_only_when_building(monkeypatch):
-    from foundation_models import get_model_spec
-    from foundation_models import factory
+    from models import get_model_spec
+    from models import factory
 
     calls = []
     constructed = {}
@@ -89,7 +89,7 @@ def test_factory_resolves_entrypoint_only_when_building(monkeypatch):
 
     backend = factory.build_backend("Sundial", "cpu")
 
-    assert calls == ["foundation_models.backends"]
+    assert calls == ["models.Sundial"]
     assert isinstance(backend, FakeBackend)
     assert constructed["spec"] is get_model_spec("Sundial")
     assert constructed["device"] == "cpu"
@@ -97,21 +97,21 @@ def test_factory_resolves_entrypoint_only_when_building(monkeypatch):
 
 
 def test_factory_unknown_model_lists_all_valid_names():
-    from foundation_models.factory import build_backend
+    from models.factory import build_backend
 
     with pytest.raises(ValueError, match="Sundial.*TimeMoE"):
         build_backend("unknown", "cpu")
 
 
 def test_factory_import_failure_identifies_model_and_entrypoint(monkeypatch):
-    from foundation_models import factory
+    from models import factory
 
     def fail_import(module_name):
         raise ModuleNotFoundError("No module named 'optional_backend'")
 
     monkeypatch.setattr(factory.importlib, "import_module", fail_import)
 
-    with pytest.raises(ImportError, match="Sundial.*foundation_models.backends"):
+    with pytest.raises(ImportError, match="Sundial.*models.Sundial"):
         factory.build_backend("Sundial", "cpu")
 
 
@@ -159,8 +159,8 @@ def test_sundial_backend_loads_pinned_revision_moves_model_and_denormalizes(monk
     )
     loader_calls = _install_fake_transformers(monkeypatch, loaded)
 
-    from foundation_models.factory import build_backend
-    from foundation_models.registry import get_model_spec
+    from models.factory import build_backend
+    from models.registry import get_model_spec
 
     backend = build_backend("Sundial", "cpu")
     output = backend.predict(history, pred_len=2)
@@ -197,8 +197,8 @@ def test_timemoe_backend_overrides_revision_and_crops_last_horizon(monkeypatch):
     )
     loader_calls = _install_fake_transformers(monkeypatch, loaded)
 
-    from foundation_models.factory import build_backend
-    from foundation_models.registry import get_model_spec
+    from models.factory import build_backend
+    from models.registry import get_model_spec
 
     backend = build_backend("TimeMoE", "cpu", revision="test-revision")
     output = backend.predict(history, pred_len=2)
@@ -237,7 +237,7 @@ def test_predict_rejects_nonfinite_nonfloating_or_malformed_history(monkeypatch,
     loaded = _FakeLoadedModel(lambda values, kwargs: torch.zeros(values.shape[0], 1))
     _install_fake_transformers(monkeypatch, loaded)
 
-    from foundation_models.factory import build_backend
+    from models.factory import build_backend
 
     backend = build_backend("Sundial", "cpu")
 
@@ -250,7 +250,7 @@ def test_predict_requires_positive_integer_horizon(monkeypatch, pred_len):
     loaded = _FakeLoadedModel(lambda values, kwargs: torch.zeros(values.shape[0], 1))
     _install_fake_transformers(monkeypatch, loaded)
 
-    from foundation_models.factory import build_backend
+    from models.factory import build_backend
 
     backend = build_backend("TimeMoE", "cpu")
 
@@ -287,7 +287,7 @@ def _backend_without_loading(backend_type, model):
 
 
 def test_sundial_training_loss_builds_last_patch_labels_and_per_sample_masks():
-    from foundation_models.backends import SundialBackend
+    from models.Sundial import SundialBackend
 
     model = _RecordingSundialModel()
     backend = _backend_without_loading(SundialBackend, model)
@@ -357,7 +357,7 @@ class _RecordingTimeMoEModel(nn.Module):
     ("horizon", "head_index"), [(1, 0), (16, 2), (48, 3)]
 )
 def test_timemoe_training_loss_is_history_only_and_selects_smallest_covering_head(horizon, head_index):
-    from foundation_models.backends import TimeMoEBackend
+    from models.TimeMoE import TimeMoEBackend
 
     model = _RecordingTimeMoEModel()
     backend = _backend_without_loading(TimeMoEBackend, model)
@@ -381,7 +381,7 @@ def test_timemoe_training_loss_is_history_only_and_selects_smallest_covering_hea
 
 
 def test_timemoe_training_loss_applies_native_huber_point_mask():
-    from foundation_models.backends import TimeMoEBackend
+    from models.TimeMoE import TimeMoEBackend
 
     model = _RecordingTimeMoEModel()
     backend = _backend_without_loading(TimeMoEBackend, model)
@@ -416,10 +416,10 @@ def test_timemoe_training_loss_applies_native_huber_point_mask():
     ],
 )
 def test_training_loss_rejects_malformed_or_zero_valid_targets_before_forward(history, target, target_mask):
-    from foundation_models import backends
+    from models import Sundial
 
     model = _RecordingSundialModel()
-    backend = _backend_without_loading(backends.SundialBackend, model)
+    backend = _backend_without_loading(Sundial.SundialBackend, model)
 
     with pytest.raises(ValueError):
         backend.training_loss(history, target, target_mask)
@@ -431,14 +431,14 @@ def test_training_loss_rejects_malformed_or_zero_valid_targets_before_forward(hi
     [torch.tensor(1.0), torch.tensor(float("nan")), torch.ones(1)],
 )
 def test_training_loss_rejects_non_scalar_nonfinite_or_nograd_native_losses(loss_value):
-    from foundation_models import backends
+    from models import Sundial
 
     class BadSundial(_RecordingSundialModel):
         def forward(self, **kwargs):
             return types.SimpleNamespace(loss=loss_value)
 
     model = BadSundial()
-    backend = _backend_without_loading(backends.SundialBackend, model)
+    backend = _backend_without_loading(Sundial.SundialBackend, model)
     with pytest.raises(ValueError, match="loss"):
         backend.training_loss(
             torch.ones(1, 2, 1), torch.ones(1, 1, 1), torch.ones(1, 1, dtype=torch.bool)
@@ -446,17 +446,18 @@ def test_training_loss_rejects_non_scalar_nonfinite_or_nograd_native_losses(loss
 
 
 def test_backend_configure_trainable_sets_eval_or_train(monkeypatch):
-    from foundation_models import backends
+    from models import Sundial
+    from models import common
 
     model = _RecordingSundialModel()
-    backend = _backend_without_loading(backends.SundialBackend, model)
+    backend = _backend_without_loading(Sundial.SundialBackend, model)
     seen = []
 
     def fake_configure(model_arg, spec_arg, mode, lora_settings):
         seen.append((model_arg, spec_arg, mode, lora_settings))
         return types.SimpleNamespace(mode=mode)
 
-    monkeypatch.setattr(backends, "configure_trainable", fake_configure)
+    monkeypatch.setattr(common, "configure_trainable", fake_configure)
     backend.configure_trainable("zero_shot", None)
     assert not model.training
     backend.configure_trainable("full", None)
