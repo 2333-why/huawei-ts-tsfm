@@ -304,6 +304,122 @@ def test_sundial_backend_uses_native_forward_when_generate_cache_api_is_incompat
     )
 
 
+def test_sundial_backend_rebuilds_corrupt_rotary_runtime_buffers(monkeypatch):
+    class _RemoteRotary(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dim = 4
+            self.base = 10000
+            self.max_position_embeddings = 8
+            self.register_buffer(
+                "inv_freq", torch.tensor([float("nan"), float("inf")]), persistent=False
+            )
+            self.register_buffer(
+                "cos_cached",
+                torch.full((1, 1, self.max_position_embeddings, self.dim), float("nan")),
+                persistent=False,
+            )
+            self.register_buffer(
+                "sin_cached",
+                torch.full((1, 1, self.max_position_embeddings, self.dim), float("nan")),
+                persistent=False,
+            )
+            self.cache_calls = []
+
+        def _set_cos_sin_cache(self, seq_len, device=None, dtype=None):
+            self.cache_calls.append((seq_len, device, dtype))
+            positions = torch.arange(seq_len, device=device, dtype=dtype)
+            frequencies = torch.outer(positions, self.inv_freq.to(device=device, dtype=dtype))
+            embedding = torch.cat((frequencies, frequencies), dim=-1)
+            self.cos_cached = embedding.cos()[None, None, :, :]
+            self.sin_cached = embedding.sin()[None, None, :, :]
+
+    class _SundialCorruptLoadedModel:
+        def __init__(self):
+            self.rotary = _RemoteRotary()
+            self.to_devices = []
+            self.eval_calls = 0
+            self.native_calls = []
+
+        def to(self, device):
+            self.to_devices.append(device)
+            return self
+
+        def eval(self):
+            self.eval_calls += 1
+            return self
+
+        def modules(self):
+            return (self.rotary,)
+
+        def __call__(self, **kwargs):
+            self.native_calls.append(
+                {
+                    key: value.detach().clone() if torch.is_tensor(value) else value
+                    for key, value in kwargs.items()
+                }
+            )
+            expected_positions = torch.arange(0, self.rotary.dim, 2, dtype=torch.float32)
+            expected_inv_freq = 1.0 / (
+                self.rotary.base ** (expected_positions / self.rotary.dim)
+            )
+            expected_frequencies = torch.outer(
+                torch.arange(
+                    self.rotary.max_position_embeddings,
+                    dtype=self.rotary.inv_freq.dtype,
+                ),
+                expected_inv_freq,
+            )
+            expected_embedding = torch.cat((expected_frequencies, expected_frequencies), dim=-1)
+            buffers_match = (
+                torch.isfinite(self.rotary.inv_freq).all()
+                and torch.allclose(self.rotary.inv_freq, expected_inv_freq)
+                and torch.isfinite(self.rotary.cos_cached).all()
+                and torch.isfinite(self.rotary.sin_cached).all()
+                and torch.allclose(
+                    self.rotary.cos_cached,
+                    expected_embedding.cos()[None, None, :, :],
+                )
+                and torch.allclose(
+                    self.rotary.sin_cached,
+                    expected_embedding.sin()[None, None, :, :],
+                )
+            )
+            input_ids = kwargs["input_ids"]
+            horizon = kwargs["max_output_length"]
+            logits = torch.full(
+                (input_ids.shape[0], 20, horizon), 2.0 if buffers_match else float("nan")
+            )
+            return types.SimpleNamespace(logits=logits)
+
+    history = torch.tensor([[[1.0], [3.0], [5.0]]], requires_grad=True)
+    loaded = _SundialCorruptLoadedModel()
+    _install_fake_transformers(monkeypatch, loaded)
+
+    from models.factory import build_backend
+
+    backend = build_backend("Sundial", "cpu")
+    output = backend.predict(history, pred_len=1)
+
+    assert loaded.to_devices == ["cpu"]
+    assert loaded.eval_calls == 1
+    assert len(loaded.native_calls) == 1
+    assert torch.isfinite(output).all()
+    assert output.shape == (1, 1, 1)
+    assert torch.allclose(loaded.rotary.inv_freq, torch.tensor([1.0, 0.01]), atol=1e-6)
+    assert torch.isfinite(loaded.rotary.cos_cached).all()
+    assert torch.isfinite(loaded.rotary.sin_cached).all()
+    assert torch.allclose(
+        loaded.rotary.cos_cached[0, 0, 0],
+        torch.tensor([1.0, 1.0, 1.0, 1.0]),
+    )
+    assert torch.allclose(
+        loaded.rotary.sin_cached[0, 0, 0],
+        torch.tensor([0.0, 0.0, 0.0, 0.0]),
+        atol=1e-6,
+    )
+
+
 def test_timemoe_backend_overrides_revision_and_crops_last_horizon(monkeypatch):
     history = torch.tensor([[[2.0], [4.0], [6.0]]])
     loaded = _FakeLoadedModel(
