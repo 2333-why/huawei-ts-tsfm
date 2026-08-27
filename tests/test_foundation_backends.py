@@ -54,8 +54,13 @@ def test_registry_and_factory_import_without_optional_model_dependencies():
         "import models.registry\n"
         "import models.factory\n"
         "import models.Sundial\n"
+        "import models.Chronos2\n"
+        "import models.TiRex\n"
+        "import models.TimesFM\n"
         "assert 'transformers' not in sys.modules\n"
         "assert 'peft' not in sys.modules\n"
+        "assert 'chronos' not in sys.modules\n"
+        "assert 'tirex' not in sys.modules\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe],
@@ -463,3 +468,210 @@ def test_backend_configure_trainable_sets_eval_or_train(monkeypatch):
     backend.configure_trainable("full", None)
     assert model.training
     assert [entry[2] for entry in seen] == ["zero_shot", "full"]
+
+
+class _FakeChronosModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(1.0))
+        self.self_attention = nn.Module()
+        self.self_attention.q = nn.Linear(1, 1)
+        self.output_patch_embedding = nn.Module()
+        self.output_patch_embedding.output_layer = nn.Linear(1, 1)
+        self.chronos_config = types.SimpleNamespace(
+            output_patch_size=4,
+            max_output_patches=8,
+        )
+        self.calls = []
+
+    def forward(self, **kwargs):
+        self.calls.append(kwargs)
+        loss = self.weight * (
+            kwargs["future_target"] * kwargs["future_target_mask"]
+        ).sum()
+        return types.SimpleNamespace(loss=loss)
+
+
+class _FakeChronosPipeline:
+    loader_calls = []
+    predict_calls = []
+
+    def __init__(self, model):
+        self.model = model
+
+    @classmethod
+    def from_pretrained(cls, model_id, **kwargs):
+        cls.loader_calls.append((model_id, kwargs))
+        return cls(_FakeChronosModel())
+
+    def predict_quantiles(self, inputs, prediction_length):
+        self.predict_calls.append((inputs.detach().clone(), prediction_length))
+        batch = inputs.shape[0]
+        means = [torch.tensor([[10.0, 11.0, 12.0, 13.0][:prediction_length]]) for _ in range(batch)]
+        quantiles = [torch.zeros(1, prediction_length, 9) for _ in range(batch)]
+        return quantiles, means
+
+
+def _install_fake_chronos(monkeypatch):
+    module = types.ModuleType("chronos")
+    module.Chronos2Pipeline = _FakeChronosPipeline
+    monkeypatch.setitem(sys.modules, "chronos", module)
+    _FakeChronosPipeline.loader_calls = []
+    _FakeChronosPipeline.predict_calls = []
+
+
+def test_chronos2_loader_prediction_and_native_training_contract(monkeypatch):
+    _install_fake_chronos(monkeypatch)
+    from models.Chronos2 import Chronos2Backend
+    from models.registry import get_model_spec
+
+    spec = get_model_spec("Chronos2")
+    backend = Chronos2Backend(spec=spec, device="cpu")
+    history = torch.tensor([[[1.0], [2.0], [3.0]]])
+    forecast = backend.predict(history, 2)
+
+    assert _FakeChronosPipeline.loader_calls == [
+        (
+            spec.model_id,
+            {"revision": spec.revision, "device_map": "cpu"},
+        )
+    ]
+    values, horizon = _FakeChronosPipeline.predict_calls[0]
+    assert values.shape == (1, 1, 3)
+    assert torch.equal(values[0, 0], history[0, :, 0])
+    assert horizon == 2
+    assert torch.equal(forecast, torch.tensor([[[10.0], [11.0]]]))
+    assert backend.model is backend.pipeline.model
+
+    loss = backend.training_loss(
+        history,
+        torch.tensor([[[4.0], [5.0], [6.0], [7.0], [8.0]]]),
+        torch.tensor([[1, 0, 1, 0, 1]], dtype=torch.bool),
+    )
+    call = backend.model.calls[0]
+    assert call["context"].shape == (1, 3)
+    assert call["future_target"].shape == (1, 5)
+    assert call["future_target_mask"].tolist() == [[True, False, True, False, True]]
+    assert call["num_output_patches"] == 2
+    assert loss.ndim == 0 and loss.requires_grad and torch.isfinite(loss)
+
+
+class _FakeTiRexModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(1.0))
+        self.calls = []
+
+    def forecast(self, **kwargs):
+        self.calls.append(kwargs)
+        context = kwargs["context"]
+        prediction_length = kwargs["prediction_length"]
+        quantiles = torch.zeros(context.shape[0], 9, prediction_length)
+        mean = torch.arange(prediction_length, dtype=context.dtype).repeat(context.shape[0], 1)
+        return quantiles, mean
+
+
+def _install_fake_tirex(monkeypatch):
+    module = types.ModuleType("tirex")
+    loaded = _FakeTiRexModel()
+    calls = []
+
+    def load_model(model_id, **kwargs):
+        calls.append((model_id, kwargs))
+        return loaded
+
+    module.load_model = load_model
+    monkeypatch.setitem(sys.modules, "tirex", module)
+    return loaded, calls
+
+
+def test_tirex_loader_uses_hf_kwargs_and_rejects_training(monkeypatch):
+    loaded, loader_calls = _install_fake_tirex(monkeypatch)
+    from models.TiRex import TiRexBackend
+    from models.registry import get_model_spec
+
+    spec = get_model_spec("TiRex")
+    backend = TiRexBackend(spec=spec, device="cpu")
+    history = torch.tensor([[[3.0], [4.0], [5.0]]])
+    forecast = backend.predict(history, 2)
+
+    assert loader_calls == [
+        (
+            spec.model_id,
+            {
+                "device": "cpu",
+                "backend": "torch",
+                "hf_kwargs": {"revision": spec.revision},
+            },
+        )
+    ]
+    assert loaded.calls[0]["context"].shape == (1, 3)
+    assert loaded.calls[0]["prediction_length"] == 2
+    assert torch.equal(forecast, torch.tensor([[[0.0], [1.0]]]))
+    report = backend.configure_trainable("zero_shot")
+    assert report.mode == "zero_shot"
+    assert report.trainable_parameters == 0
+    assert all(not parameter.requires_grad for parameter in backend.model.parameters())
+    with pytest.raises(ValueError, match="TiRex.*zero_shot|unsupported"):
+        backend.configure_trainable("full")
+    with pytest.raises(ValueError, match="TiRex.*training|unsupported"):
+        backend.training_loss(history, torch.ones(1, 1, 1), torch.ones(1, 1, dtype=torch.bool))
+
+
+class _FakeTimesFMModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+        self.calls = []
+
+    def forward(self, **kwargs):
+        self.calls.append(kwargs)
+        past_values = kwargs["past_values"]
+        horizon = 5
+        point = torch.stack([values[-1].expand(horizon) for values in past_values]) * self.scale
+        return types.SimpleNamespace(mean_predictions=point)
+
+
+class _FakeTimesFMClass:
+    model = _FakeTimesFMModel()
+    loader_calls = []
+
+    @classmethod
+    def from_pretrained(cls, model_id, **kwargs):
+        cls.loader_calls.append((model_id, kwargs))
+        return cls.model
+
+
+def _install_fake_timesfm(monkeypatch):
+    module = types.ModuleType("transformers")
+    module.TimesFm2_5ModelForPrediction = _FakeTimesFMClass
+    monkeypatch.setitem(sys.modules, "transformers", module)
+    _FakeTimesFMClass.model = _FakeTimesFMModel()
+    _FakeTimesFMClass.loader_calls = []
+
+
+def test_timesfm_loader_crops_mean_predictions_and_computes_masked_mse(monkeypatch):
+    _install_fake_timesfm(monkeypatch)
+    from models.TimesFM import TimesFMBackend
+    from models.registry import get_model_spec
+
+    spec = get_model_spec("TimesFM")
+    backend = TimesFMBackend(spec=spec, device="cpu")
+    history = torch.tensor([[[1.0], [2.0], [3.0]]])
+    forecast = backend.predict(history, 3)
+
+    assert _FakeTimesFMClass.loader_calls == [
+        (
+            spec.model_id,
+            {"revision": spec.revision, "device_map": "cpu"},
+        )
+    ]
+    assert _FakeTimesFMClass.model.calls[0]["past_values"][0].shape == (3,)
+    assert torch.equal(forecast, torch.tensor([[[3.0], [3.0], [3.0]]]))
+
+    target = torch.tensor([[[1.0], [5.0], [9.0]]])
+    mask = torch.tensor([[1, 0, 1]], dtype=torch.bool)
+    loss = backend.training_loss(history, target, mask)
+    expected = ((torch.tensor([3.0, 3.0]) - torch.tensor([1.0, 9.0])) ** 2).mean()
+    assert torch.allclose(loss.detach(), expected)
+    assert loss.ndim == 0 and loss.requires_grad and torch.isfinite(loss)

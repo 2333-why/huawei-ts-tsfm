@@ -12,9 +12,9 @@ def test_task_matrix_has_expected_cardinality_and_is_deterministic():
     first = list(iter_experiment_tasks())
     second = list(iter_experiment_tasks())
 
-    assert len(first) == 2 * 4 * 4
+    assert len(first) == 68
     assert first == second
-    assert len(set(first)) == 32
+    assert len(set(first)) == 68
     assert all(isinstance(task, ExperimentTask) for task in first)
 
 
@@ -34,8 +34,43 @@ def test_task_matrix_maps_each_setting_to_dataset_specific_horizon():
         (setting, dataset, seq_len, pred_len)
         for (setting, dataset), (seq_len, pred_len) in expected_task_shapes.items()
     }
+    assert [(task.model, task.mode) for task in tasks[:17]] == [
+        ("Sundial", "zero_shot"),
+        ("Sundial", "adapter"),
+        ("Sundial", "full"),
+        ("Sundial", "last_layer"),
+        ("TimeMoE", "zero_shot"),
+        ("TimeMoE", "adapter"),
+        ("TimeMoE", "full"),
+        ("TimeMoE", "last_layer"),
+        ("Chronos2", "zero_shot"),
+        ("Chronos2", "adapter"),
+        ("Chronos2", "full"),
+        ("Chronos2", "last_layer"),
+        ("TiRex", "zero_shot"),
+        ("TimesFM", "zero_shot"),
+        ("TimesFM", "adapter"),
+        ("TimesFM", "full"),
+        ("TimesFM", "last_layer"),
+    ]
     assert {(task.model, task.mode) for task in tasks} == {
-        (model, mode) for model in MODEL_NAMES for mode in RUN_MODES
+        ("Sundial", "zero_shot"),
+        ("Sundial", "adapter"),
+        ("Sundial", "full"),
+        ("Sundial", "last_layer"),
+        ("TimeMoE", "zero_shot"),
+        ("TimeMoE", "adapter"),
+        ("TimeMoE", "full"),
+        ("TimeMoE", "last_layer"),
+        ("Chronos2", "zero_shot"),
+        ("Chronos2", "adapter"),
+        ("Chronos2", "full"),
+        ("Chronos2", "last_layer"),
+        ("TiRex", "zero_shot"),
+        ("TimesFM", "zero_shot"),
+        ("TimesFM", "adapter"),
+        ("TimesFM", "full"),
+        ("TimesFM", "last_layer"),
     }
 
     for task in tasks:

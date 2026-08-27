@@ -9,7 +9,7 @@ from typing import Any, Optional, Tuple
 import torch
 
 from .base import ensure_forecast_shape
-from .registry import FoundationModelSpec
+from .registry import FoundationModelSpec, validate_model_mode
 from .trainability import configure_trainable
 
 
@@ -73,6 +73,29 @@ def _validate_training_inputs(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Validate and normalize a training batch before touching the model."""
 
+    history, target, valid = _validate_training_batch(
+        history, target, target_mask, device, dtype
+    )
+    normalized, means, stdev = _normalise_window(history)
+    safe_target = torch.where(valid, target, means.expand_as(target))
+    normalized_target = (safe_target - means) / stdev
+    normalized_target = torch.where(
+        valid, normalized_target, torch.zeros_like(normalized_target)
+    )
+    if not bool(torch.isfinite(normalized_target).all()):
+        raise ValueError("normalized target must contain only finite values")
+    return normalized, normalized_target, valid
+
+
+def _validate_training_batch(
+    history: Any,
+    target: Any,
+    target_mask: Any,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Validate and move an unscaled training batch for native model paths."""
+
     history = _validate_history(history)
     if not torch.is_tensor(target):
         raise ValueError("target must be a torch.Tensor")
@@ -119,17 +142,11 @@ def _validate_training_inputs(
     if not bool(valid.any()):
         raise ValueError("target_mask contains no valid targets")
 
-    history = history.to(device=device, dtype=dtype)
-    target = target.to(device=device, dtype=dtype)
-    normalized, means, stdev = _normalise_window(history)
-    safe_target = torch.where(valid, target, means.expand_as(target))
-    normalized_target = (safe_target - means) / stdev
-    normalized_target = torch.where(
-        valid, normalized_target, torch.zeros_like(normalized_target)
+    return (
+        history.to(device=device, dtype=dtype),
+        target.to(device=device, dtype=dtype),
+        valid,
     )
-    if not bool(torch.isfinite(normalized_target).all()):
-        raise ValueError("normalized target must contain only finite values")
-    return normalized, normalized_target, valid
 
 
 def _extract_loss(output: Any) -> Any:
@@ -225,6 +242,7 @@ class _GenerateBackend:
     def configure_trainable(self, mode: str, lora_settings: Any = None) -> Any:
         """Apply the shared trainability policy and set the model phase."""
 
+        validate_model_mode(self.model_name, mode)
         report = configure_trainable(
             self.model,
             self.spec,
@@ -253,6 +271,22 @@ class _GenerateBackend:
             dtype,
         )
 
+    def _training_batch(
+        self,
+        history: Any,
+        target: Any,
+        target_mask: Any,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        history_tensor = _validate_history(history)
+        dtype = _model_dtype(self.model, history_tensor.dtype)
+        return _validate_training_batch(
+            history_tensor,
+            target,
+            target_mask,
+            self.device,
+            dtype,
+        )
+
 
 __all__ = [
     "_GenerateBackend",
@@ -264,6 +298,7 @@ __all__ = [
     "_normalise_window",
     "_positive_config_int",
     "_validate_history",
+    "_validate_training_batch",
     "_validate_loss",
     "_validate_pred_len",
     "_validate_training_inputs",

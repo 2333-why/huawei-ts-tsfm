@@ -135,6 +135,8 @@ def _audit_report(
 
 
 def _adapter_module_matches(name: str, target_modules: Sequence[str]) -> bool:
+    if "all-linear" in target_modules:
+        return True
     return any(name == suffix or name.endswith("." + suffix) for suffix in target_modules)
 
 
@@ -166,13 +168,19 @@ def _configure_adapter(
         ) from exc
 
     try:
+        # PEFT 0.13.x does not yet expand the newer ``all-linear`` shorthand.
+        # Resolve it to the concrete module names while retaining the concise
+        # capability declaration in the registry.
+        injection_targets = target_modules
+        if "all-linear" in target_modules:
+            injection_targets = tuple(matched_modules)
         config = LoraConfig(
             r=lora_settings.r,
             lora_alpha=lora_settings.lora_alpha,
             lora_dropout=lora_settings.lora_dropout,
             bias=lora_settings.bias,
             task_type=lora_settings.task_type,
-            target_modules=list(target_modules),
+            target_modules=list(injection_targets),
             fan_in_fan_out=lora_settings.fan_in_fan_out,
         )
         inject_adapter_in_model(config, model)

@@ -10,7 +10,7 @@ import pytest
 def test_registry_exposes_fixed_catalog_and_immutable_specs():
     from models import MODEL_NAMES, RUN_MODES, get_model_spec
 
-    assert MODEL_NAMES == ("Sundial", "TimeMoE")
+    assert MODEL_NAMES == ("Sundial", "TimeMoE", "Chronos2", "TiRex", "TimesFM")
     assert RUN_MODES == ("zero_shot", "adapter", "full", "last_layer")
 
     expected = {
@@ -25,6 +25,35 @@ def test_registry_exposes_fixed_catalog_and_immutable_specs():
             "revision": "446753ee48ff3726d0606a81d0092d54acee995e",
             "entrypoint": "models.TimeMoE:TimeMoEBackend",
             "last_layer_selector": "lm_heads",
+        },
+        "Chronos2": {
+            "model_id": "amazon/chronos-2",
+            "revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",
+            "entrypoint": "models.Chronos2:Chronos2Backend",
+            "last_layer_selector": "output_patch_embedding",
+            "supported_modes": ("zero_shot", "adapter", "full", "last_layer"),
+            "adapter_target_modules": (
+                "self_attention.q",
+                "self_attention.v",
+                "self_attention.k",
+                "self_attention.o",
+                "output_patch_embedding.output_layer",
+            ),
+        },
+        "TiRex": {
+            "model_id": "NX-AI/TiRex",
+            "revision": "63c740922493f5fbe60b277609ec62babfba2762",
+            "entrypoint": "models.TiRex:TiRexBackend",
+            "last_layer_selector": None,
+            "supported_modes": ("zero_shot",),
+        },
+        "TimesFM": {
+            "model_id": "google/timesfm-2.5-200m-transformers",
+            "revision": "5a9806b9b291fad9233b5249d88263f1846304d3",
+            "entrypoint": "models.TimesFM:TimesFMBackend",
+            "last_layer_selector": "output_projection_point",
+            "supported_modes": ("zero_shot", "adapter", "full", "last_layer"),
+            "adapter_target_modules": ("all-linear",),
         },
     }
 
@@ -58,5 +87,27 @@ def test_registry_import_has_no_optional_dependency_side_effect():
 def test_unknown_model_name_reports_available_catalog():
     from models import get_model_spec
 
-    with pytest.raises(ValueError, match="Sundial.*TimeMoE"):
+    with pytest.raises(ValueError, match="Sundial.*TimeMoE.*Chronos2.*TiRex.*TimesFM"):
         get_model_spec("unknown")
+
+
+@pytest.mark.parametrize(
+    ("model", "modes"),
+    [
+        ("Sundial", ("zero_shot", "adapter", "full", "last_layer")),
+        ("TimeMoE", ("zero_shot", "adapter", "full", "last_layer")),
+        ("Chronos2", ("zero_shot", "adapter", "full", "last_layer")),
+        ("TiRex", ("zero_shot",)),
+        ("TimesFM", ("zero_shot", "adapter", "full", "last_layer")),
+    ],
+)
+def test_model_modes_are_capability_driven_and_invalid_modes_fail_early(model, modes):
+    from models.registry import get_model_modes, validate_model_mode
+
+    assert get_model_modes(model) == modes
+    for mode in modes:
+        assert validate_model_mode(model, mode) is None
+
+    invalid = "full" if model == "TiRex" else "unsupported"
+    with pytest.raises(ValueError, match="valid modes|zero_shot"):
+        validate_model_mode(model, invalid)

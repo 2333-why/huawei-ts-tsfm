@@ -12,7 +12,9 @@ from .registry import (
     MODEL_SPECS,
     RUN_MODES,
     FoundationModelSpec,
+    get_model_modes,
     get_model_spec,
+    validate_model_mode,
 )
 from .tasks import ExperimentTask, iter_experiment_tasks
 
@@ -52,5 +54,7 @@ __all__ = [
     "configure_trainable",
     "ensure_forecast_shape",
     "get_model_spec",
+    "get_model_modes",
     "iter_experiment_tasks",
+    "validate_model_mode",
 ]

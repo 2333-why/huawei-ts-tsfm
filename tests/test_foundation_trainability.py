@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from models.registry import FoundationModelSpec
+from models.registry import FoundationModelSpec, get_model_spec
 
 
 class TinyTrainableModel(nn.Module):
@@ -247,3 +247,54 @@ def test_optimizer_step_changes_only_parameters_allowed_by_mode(mode):
         name in intended or torch.equal(value, before[name])
         for name, value in model.state_dict().items()
     )
+
+
+class ModernChronosTrainableModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.self_attention = nn.Module()
+        self.self_attention.q = nn.Linear(2, 2)
+        self.self_attention.v = nn.Linear(2, 2)
+        self.self_attention.k = nn.Linear(2, 2)
+        self.self_attention.o = nn.Linear(2, 2)
+        self.output_patch_embedding = nn.Module()
+        self.output_patch_embedding.output_layer = nn.Linear(2, 1)
+        self.unrelated = nn.Linear(2, 2)
+
+
+class ModernTimesFMTrainableModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.output_projection_point = nn.Linear(2, 1)
+        self.decoder = nn.Linear(2, 2)
+
+
+@pytest.mark.parametrize(
+    ("model_name", "model_type", "last_prefix"),
+    [
+        ("Chronos2", ModernChronosTrainableModel, "output_patch_embedding"),
+        ("TimesFM", ModernTimesFMTrainableModel, "output_projection_point"),
+    ],
+)
+def test_new_model_specs_support_real_adapter_full_and_strict_last_layer(
+    model_name, model_type, last_prefix
+):
+    from models.trainability import LoraSettings, configure_trainable
+
+    spec = get_model_spec(model_name)
+    for mode in ("adapter", "full", "last_layer"):
+        model = model_type()
+        report = configure_trainable(
+            model,
+            spec,
+            mode,
+            LoraSettings(r=2, lora_alpha=4) if mode == "adapter" else None,
+        )
+        names = tuple(name for name, parameter in model.named_parameters() if parameter.requires_grad)
+        if mode == "adapter":
+            assert names and all("lora_" in name for name in names)
+        elif mode == "full":
+            assert report.trainable_parameters == report.total_parameters
+            assert names == tuple(name for name, _ in model.named_parameters())
+        else:
+            assert names and all(name == last_prefix or name.startswith(last_prefix + ".") for name in names)
