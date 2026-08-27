@@ -386,6 +386,7 @@ path_is_strictly_below_root() {
 GPU_QUEUES=()
 GPU_RESULTS=()
 declare -A TASK_OUTPUTS=()
+declare -A TASK_CANONICAL_OUTPUTS=()
 declare -A TASK_MODEL_IDS=()
 declare -A TASK_REVISIONS=()
 declare -A TASK_ORDINALS=()
@@ -415,11 +416,16 @@ for ordinal in "${!TASK_ROWS[@]}"; do
         exit 2
     fi
     key="$seq_len|$pred_len|$dataset|$model|$mode"
+    if [[ -n "${TASK_CANONICAL_OUTPUTS[$output_dir]+present}" ]]; then
+        echo "duplicate canonical foundation task output path: $output_dir" >&2
+        exit 2
+    fi
     if [[ -n "${TASK_OUTPUTS[$key]+present}" ]]; then
         echo "duplicate foundation task identity: $key" >&2
         exit 2
     fi
     TASK_OUTPUTS["$key"]="$output_dir"
+    TASK_CANONICAL_OUTPUTS["$output_dir"]="$key"
     TASK_MODEL_IDS["$key"]="$model_id"
     TASK_REVISIONS["$key"]="$revision"
     TASK_ORDINALS["$key"]="$ordinal"
@@ -618,9 +624,26 @@ load_resume_summary() {
     fi
     [[ "$header" == "$SUMMARY_HEADER" ]] || return 0
 
-    local seq_len pred_len dataset model mode status output_dir exit_code launch_gpu fingerprint extra key
-    while IFS=$'\t' read -r seq_len pred_len dataset model mode status output_dir exit_code launch_gpu fingerprint extra; do
-        [[ -n "$seq_len" || -n "$dataset" || -n "$model" || -n "$mode" ]] || continue
+    local seq_len pred_len dataset model mode status output_dir exit_code launch_gpu fingerprint key
+    local resume_line field_count
+    local -a resume_fields
+    while IFS= read -r resume_line; do
+        [[ -n "$resume_line" ]] || continue
+        field_count="$(awk -F $'\t' '{print NF; exit}' <<<"$resume_line")"
+        [[ "$field_count" == "10" ]] || continue
+        resume_line="${resume_line//$'\t'/$'\x1f'}"
+        IFS=$'\x1f' read -r -a resume_fields <<<"$resume_line"
+        (( ${#resume_fields[@]} == 10 )) || continue
+        seq_len="${resume_fields[0]}"
+        pred_len="${resume_fields[1]}"
+        dataset="${resume_fields[2]}"
+        model="${resume_fields[3]}"
+        mode="${resume_fields[4]}"
+        status="${resume_fields[5]}"
+        output_dir="${resume_fields[6]}"
+        exit_code="${resume_fields[7]}"
+        launch_gpu="${resume_fields[8]}"
+        fingerprint="${resume_fields[9]}"
         key="$(task_key "$seq_len" "$pred_len" "$dataset" "$model" "$mode")"
         [[ -n "${TASK_OUTPUTS[$key]+present}" ]] || continue
         if [[ -n "${RESUME_SEEN[$key]:-}" ]]; then

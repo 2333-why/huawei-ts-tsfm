@@ -287,6 +287,20 @@ def test_two_gpu_smoke_expands_32_tasks_with_serial_queues_and_contained_outputs
     assert all(row.split("\t")[5] == "PASS" for row in rows[1:])
 
 
+def test_in_root_output_symlink_aliases_are_rejected_before_workers_start(tmp_path):
+    repo, env, output_root, record = _harness(tmp_path)
+    alias_parent = output_root / "seq48_pred1" / "skippd_luoyang" / "Sundial"
+    alias_parent.mkdir(parents=True)
+    (alias_parent / "zero_shot").mkdir()
+    (alias_parent / "adapter").symlink_to(alias_parent / "zero_shot", target_is_directory=True)
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode != 0
+    assert [event for event in _events(record) if event["kind"] == "run"] == []
+
+
 def test_one_runner_failure_is_recorded_and_propagates_after_independent_tasks(tmp_path):
     repo, env, output_root, record = _harness(tmp_path)
     env["FAKE_FAIL_KEY"] = "48|1|skippd_luoyang|Sundial|adapter"
@@ -390,6 +404,30 @@ def test_duplicate_summary_identity_invalidates_only_that_task(tmp_path):
     )
     assert second.returncode == 0, second.stdout + second.stderr
     assert len([event for event in _events(record) if event["kind"] == "run"]) == before + 1
+
+
+def test_resume_rejects_empty_surplus_summary_column_for_only_that_task(tmp_path):
+    repo, env, output_root, record = _harness(tmp_path)
+    first = subprocess.run(
+        ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    summary = output_root / "smoke_summary.tsv"
+    rows = summary.read_text(encoding="utf-8").splitlines()
+    summary.write_text("\n".join([rows[0], rows[1] + "\t"] + rows[2:]) + "\n", encoding="utf-8")
+    before = len([event for event in _events(record) if event["kind"] == "run"])
+    env.update(RESUME="1", GPUS="2 3")
+    second = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    rerun = [event for event in _events(record) if event["kind"] == "run"][before:]
+    assert len(rerun) == 1
+    assert (rerun[0]["seq_len"], rerun[0]["pred_len"], rerun[0]["dataset"], rerun[0]["model"], rerun[0]["mode"]) == (
+        48, 1, "skippd_luoyang", "Sundial", "zero_shot"
+    )
 
 
 def test_dataset_content_change_retries_exactly_16_tasks(tmp_path):
@@ -506,6 +544,33 @@ def test_paths_with_spaces_are_supported_and_summary_is_exact(tmp_path):
     assert all(str(spaced.resolve()) in row for row in rows[1:])
 
 
+def test_full_run_branch_omits_smoke_and_publishes_full_summary(tmp_path):
+    repo, env, output_root, record = _harness(tmp_path)
+    env.update(SMOKE="0")
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    events = [event for event in _events(record) if event["kind"] == "run"]
+    assert len(events) == 32
+    assert all("--smoke" not in event["args"] for event in events)
+    summary = output_root / "run_summary.tsv"
+    rows = summary.read_text(encoding="utf-8").splitlines()
+    assert rows[0] == SUMMARY_HEADER and len(rows) == 33
+    for event in events:
+        output = Path(event["args"][event["args"].index("--output_dir") + 1])
+        manifest = (output / "completion.tsv").read_text(encoding="utf-8").splitlines()[1].split("\t")
+        assert manifest[6] == "full"
+        metrics = json.loads((output / "metrics.json").read_text(encoding="utf-8"))
+        assert metrics["run_mode"] == "full"
+        assert metrics["limits"] == {"train": 0, "val": 0, "test": 0}
+        if event["mode"] == "zero_shot":
+            assert metrics["phase_steps"] == {"train": 0, "val": 0, "test": 1}
+        else:
+            assert metrics["phase_steps"] == {"train": 1, "val": 1, "test": 1}
+
+
 @pytest.mark.parametrize(("signal", "expected_return"), [(signal.SIGINT, 130), (signal.SIGTERM, 143)])
 def test_signal_kills_fake_descendants_and_preserves_prior_summary(tmp_path, signal, expected_return):
     repo, env, output_root, _record = _harness(tmp_path)
@@ -526,12 +591,13 @@ def test_signal_kills_fake_descendants_and_preserves_prior_summary(tmp_path, sig
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            pids = [int(path.read_text()) for path in pid_dir.glob("child-*")]
+            pids = [int(path.read_text()) for path in pid_dir.glob("runner-*")]
+            pids += [int(path.read_text()) for path in pid_dir.glob("child-*")]
             pids += [int(path.read_text()) for path in pid_dir.glob("grandchild-*")]
-            if len(pids) >= 4:
+            if len(pids) >= 6:
                 break
             time.sleep(0.05)
-        assert len(pids) >= 4
+        assert len(pids) >= 6
         process.send_signal(signal)
         assert process.wait(timeout=10) == expected_return
         deadline = time.monotonic() + 5
