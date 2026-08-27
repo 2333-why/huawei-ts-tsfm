@@ -7,6 +7,7 @@ import types
 
 import pytest
 import torch
+from torch import nn
 
 
 def test_ensure_forecast_shape_adds_only_single_channel():
@@ -255,3 +256,209 @@ def test_predict_requires_positive_integer_horizon(monkeypatch, pred_len):
 
     with pytest.raises(ValueError):
         backend.predict(torch.ones(1, 2, 1), pred_len=pred_len)
+
+
+class _RecordingSundialModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+        self.config = types.SimpleNamespace(input_token_len=4, output_token_lens=[6])
+        self.forward_calls = []
+
+    def forward(self, **kwargs):
+        self.forward_calls.append(
+            {key: value.detach().clone() if torch.is_tensor(value) else value for key, value in kwargs.items()}
+        )
+        # Keep the fake loss differentiable while making it depend on native labels/masks.
+        output_len = kwargs["mask_y"].shape[-1]
+        loss = self.scale * (kwargs["labels"][..., -output_len:] * kwargs["mask_y"]).sum()
+        return types.SimpleNamespace(loss=loss)
+
+
+def _backend_without_loading(backend_type, model):
+    backend = backend_type.__new__(backend_type)
+    backend.model = model
+    backend.device = torch.device("cpu")
+    backend.spec = types.SimpleNamespace(last_layer_selector="output")
+    backend.model_name = backend_type.model_name
+    backend.model_id = "tiny"
+    backend.revision = "test"
+    return backend
+
+
+def test_sundial_training_loss_builds_last_patch_labels_and_per_sample_masks():
+    from foundation_models.backends import SundialBackend
+
+    model = _RecordingSundialModel()
+    backend = _backend_without_loading(SundialBackend, model)
+    history = torch.tensor(
+        [[[1.0], [2.0], [3.0], [4.0], [5.0], [6.0]], [[2.0], [4.0], [6.0], [8.0], [10.0], [12.0]]]
+    )
+    target = torch.tensor([[[10.0], [20.0]], [[30.0], [40.0]]])
+    target_mask = torch.tensor([[True, False], [False, True]])
+
+    loss = backend.training_loss(history, target, target_mask)
+
+    assert len(model.forward_calls) == 2
+    assert loss.ndim == 0 and loss.requires_grad and torch.isfinite(loss)
+    for index, call in enumerate(model.forward_calls):
+        assert call["input_ids"].shape == (1, 6)
+        centered = history[index, :, 0] - history[index].mean()
+        scale = torch.sqrt(centered.var(unbiased=False) + 1e-5)
+        assert torch.allclose(call["input_ids"], (centered / scale).unsqueeze(0))
+        assert call["labels"].shape == (1, 10)
+        assert torch.all(call["labels"][0, :4] == 0)
+        target_centered = target[index, :, 0] - history[index].mean()
+        expected_target = target_centered / scale
+        expected_target[1 if index == 0 else 0] = 0.0
+        assert torch.allclose(call["labels"][0, 4:6], expected_target)
+        assert torch.all(call["labels"][0, 6:] == 0)
+        assert call["loss_masks"].tolist() == [[0.0, 1.0]]
+        assert call["mask_y"].tolist() == [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]] if index == 0 else [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0]]
+        assert call["return_dict"] is True
+        assert call["use_cache"] is False
+        assert call["revin"] is False
+
+
+class _RecordingBackbone(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(1.0))
+        self.calls = []
+
+    def forward(self, input_ids, **kwargs):
+        self.calls.append((input_ids.detach().clone(), kwargs))
+        hidden = torch.cat((input_ids, input_ids * 2.0, input_ids * 3.0), dim=-1)
+        return types.SimpleNamespace(last_hidden_state=hidden * self.weight)
+
+
+class _RecordingHead(nn.Module):
+    def __init__(self, horizon):
+        super().__init__()
+        self.horizon = horizon
+        self.weight = nn.Parameter(torch.ones(3, horizon))
+        self.calls = []
+
+    def forward(self, hidden):
+        self.calls.append(hidden.detach().clone())
+        return hidden.matmul(self.weight)
+
+
+class _RecordingTimeMoEModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = types.SimpleNamespace(input_size=1, horizon_lengths=[1, 8, 32, 64])
+        self.model = _RecordingBackbone()
+        self.lm_heads = nn.ModuleList([_RecordingHead(horizon) for horizon in [1, 8, 32, 64]])
+        self.loss_function = nn.HuberLoss(reduction="none", delta=1.0)
+
+
+@pytest.mark.parametrize(
+    ("horizon", "head_index"), [(1, 0), (16, 2), (48, 3)]
+)
+def test_timemoe_training_loss_is_history_only_and_selects_smallest_covering_head(horizon, head_index):
+    from foundation_models.backends import TimeMoEBackend
+
+    model = _RecordingTimeMoEModel()
+    backend = _backend_without_loading(TimeMoEBackend, model)
+    history = torch.tensor([[[1.0], [2.0], [3.0], [4.0]]])
+    target = torch.arange(1.0, horizon + 1.0).reshape(1, horizon, 1)
+    target_mask = torch.ones(1, horizon, dtype=torch.bool)
+
+    loss = backend.training_loss(history, target, target_mask)
+
+    assert loss.ndim == 0 and loss.requires_grad and torch.isfinite(loss)
+    assert len(model.model.calls) == 1
+    input_ids, kwargs = model.model.calls[0]
+    assert input_ids.shape == (1, 4, 1)
+    history_centered = history[..., 0] - history.mean()
+    history_scale = torch.sqrt(history_centered.var(unbiased=False) + 1e-5)
+    assert torch.allclose(input_ids[..., 0], history_centered / history_scale)
+    assert kwargs["return_dict"] is True
+    assert kwargs["use_cache"] is False
+    assert all(not head.calls for index, head in enumerate(model.lm_heads) if index != head_index)
+    assert len(model.lm_heads[head_index].calls) == 1
+
+
+def test_timemoe_training_loss_applies_native_huber_point_mask():
+    from foundation_models.backends import TimeMoEBackend
+
+    model = _RecordingTimeMoEModel()
+    backend = _backend_without_loading(TimeMoEBackend, model)
+    history = torch.tensor([[[0.0], [1.0], [2.0], [3.0]]])
+    target = torch.tensor([[[0.0], [4.0], [100.0]]])
+    target_mask = torch.tensor([[True, False, True]])
+
+    loss = backend.training_loss(history, target, target_mask)
+    history_mean = history.mean()
+    history_scale = torch.sqrt(history[..., 0].var(unbiased=False) + 1e-5)
+    normalized_target = (target[..., 0] - history_mean) / history_scale
+    # The selected horizon-8 head emits three times the final hidden value for this fake.
+    normalized_history = (history[..., 0] - history_mean) / history_scale
+    prediction_value = normalized_history[0, -1] * 6.0
+    expected = torch.nn.functional.huber_loss(
+        torch.tensor([prediction_value, prediction_value]),
+        torch.tensor([normalized_target[0, 0], normalized_target[0, 2]]),
+        reduction="mean",
+    )
+    assert torch.allclose(loss.detach(), expected, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "history,target,target_mask",
+    [
+        (torch.ones(1, 2, 1), torch.ones(1, 1, 1), torch.zeros(1, 1, dtype=torch.bool)),
+        (torch.ones(1, 2, 1), torch.ones(1, 1, 1), torch.tensor([[0.5]])),
+        (torch.ones(1, 2, 1), torch.ones(1, 1, 1), torch.tensor([[float("nan")]])),
+        (torch.ones(1, 2, 1), torch.ones(1, 1, 2), torch.ones(1, 1, 2)),
+        (torch.ones(1, 2, 1), torch.ones(2, 1, 1), torch.ones(2, 1, dtype=torch.bool)),
+        (torch.ones(1, 2, 1), torch.tensor([[[float("nan")]]]), torch.ones(1, 1, dtype=torch.bool)),
+    ],
+)
+def test_training_loss_rejects_malformed_or_zero_valid_targets_before_forward(history, target, target_mask):
+    from foundation_models import backends
+
+    model = _RecordingSundialModel()
+    backend = _backend_without_loading(backends.SundialBackend, model)
+
+    with pytest.raises(ValueError):
+        backend.training_loss(history, target, target_mask)
+    assert model.forward_calls == []
+
+
+@pytest.mark.parametrize(
+    "loss_value",
+    [torch.tensor(1.0), torch.tensor(float("nan")), torch.ones(1)],
+)
+def test_training_loss_rejects_non_scalar_nonfinite_or_nograd_native_losses(loss_value):
+    from foundation_models import backends
+
+    class BadSundial(_RecordingSundialModel):
+        def forward(self, **kwargs):
+            return types.SimpleNamespace(loss=loss_value)
+
+    model = BadSundial()
+    backend = _backend_without_loading(backends.SundialBackend, model)
+    with pytest.raises(ValueError, match="loss"):
+        backend.training_loss(
+            torch.ones(1, 2, 1), torch.ones(1, 1, 1), torch.ones(1, 1, dtype=torch.bool)
+        )
+
+
+def test_backend_configure_trainable_sets_eval_or_train(monkeypatch):
+    from foundation_models import backends
+
+    model = _RecordingSundialModel()
+    backend = _backend_without_loading(backends.SundialBackend, model)
+    seen = []
+
+    def fake_configure(model_arg, spec_arg, mode, lora_settings):
+        seen.append((model_arg, spec_arg, mode, lora_settings))
+        return types.SimpleNamespace(mode=mode)
+
+    monkeypatch.setattr(backends, "configure_trainable", fake_configure)
+    backend.configure_trainable("zero_shot", None)
+    assert not model.training
+    backend.configure_trainable("full", None)
+    assert model.training
+    assert [entry[2] for entry in seen] == ["zero_shot", "full"]
