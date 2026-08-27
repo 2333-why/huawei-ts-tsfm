@@ -2,7 +2,7 @@
 
 Status: complete
 
-Commit: final `HEAD` (`feat: enforce foundation model trainability modes`); report the resolved SHA from `git rev-parse HEAD`.
+Commit: `a6d25be` (`feat: enforce foundation model trainability modes`).
 
 ## Scope
 
