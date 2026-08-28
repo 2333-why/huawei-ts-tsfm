@@ -1,5 +1,7 @@
 # TSFM-only power forecasting
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 This repository provides power-only forecasting with five time-series foundation
 models: Sundial, TimeMoE, Chronos2, TiRex, and TimesFM.  Each run consumes a
 single normalized power channel with shape `[B, L, 1]` and returns
@@ -196,6 +198,54 @@ RESUME=1 \
 OUTPUT_ROOT=results_foundation_models \
 SUMMARY_PATH=results_foundation_models/run_summary.tsv \
   bash scripts/run_all_foundation_models_2gpu.sh
+```
+
+## Eight-GPU batch script
+
+`scripts/run_all_foundation_models_8gpu.sh` is the fixed eight-GPU batch entry
+for all 68 supported tasks.  It defaults to `GPUS='0 1 2 3 4 5 6 7'` and
+requires exactly eight distinct canonical physical GPU ordinals.  Tasks are
+assigned by `ordinal % 8`; each GPU queue is serial, while the eight queues may
+run in parallel.  Each process launches one physical ordinal as
+`CUDA_VISIBLE_DEVICES=<ordinal>` and the runner uses the process-local
+`--device cuda:0`; no DataParallel is used.
+
+The entry supports `SMOKE=0` or `SMOKE=1` and `RESUME=0` or `RESUME=1`.  It
+shares the same validation and artifact contract as
+`scripts/run_all_foundation_models_2gpu.sh`: identity, schema, data fingerprint,
+artifact hashes, checkpoint/metrics fields, model ID, and pinned revision must
+validate before a task is resumed.  Relevant variables are `PYTHON`,
+`CONFIG_PYTHON`, `GPUS`, `SMOKE`, `RESUME`, `OUTPUT_ROOT`, `SUMMARY_PATH`,
+`SKIPPD_PARQUET`, and `PVOD_PARQUET`.
+
+Example eight-GPU smoke invocation:
+
+```bash
+PYTHON=.venv-tsfm-modern/bin/python \
+GPUS='0 1 2 3 4 5 6 7' \
+SMOKE=1 \
+RESUME=0 \
+OUTPUT_ROOT=results_foundation_models_smoke \
+  bash scripts/run_all_foundation_models_8gpu.sh
+```
+
+For a full eight-GPU batch run, or to resume validated tasks:
+
+```bash
+PYTHON=.venv-tsfm-modern/bin/python \
+GPUS='0 1 2 3 4 5 6 7' \
+SMOKE=0 \
+RESUME=0 \
+OUTPUT_ROOT=results_foundation_models \
+  bash scripts/run_all_foundation_models_8gpu.sh
+
+PYTHON=.venv-tsfm-modern/bin/python \
+GPUS='0 1 2 3 4 5 6 7' \
+SMOKE=0 \
+RESUME=1 \
+OUTPUT_ROOT=results_foundation_models \
+SUMMARY_PATH=results_foundation_models/run_summary.tsv \
+  bash scripts/run_all_foundation_models_8gpu.sh
 ```
 
 ## Cache warming and offline preflight

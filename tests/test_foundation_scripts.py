@@ -1,4 +1,4 @@
-"""Executable contracts for the two-GPU foundation-model scripts."""
+"""Executable contracts for the fixed multi-GPU foundation-model scripts."""
 
 from __future__ import annotations
 
@@ -218,6 +218,10 @@ def _copied_default_harness(tmp_path: Path):
     (copied_repo / "models").mkdir()
     (copied_repo / "configs" / "datasets").mkdir(parents=True)
     shutil.copy2(source_repo / "scripts" / "run_all_foundation_models_2gpu.sh", copied_repo / "scripts")
+    shutil.copy2(
+        source_repo / "scripts" / "_run_all_foundation_models_fixed_gpu.sh",
+        copied_repo / "scripts",
+    )
     shutil.copy2(source_repo / "scripts" / "smoke_all_foundation_models_2gpu.sh", copied_repo / "scripts")
     shutil.copy2(source_repo / "models" / "registry.py", copied_repo / "models")
     shutil.copy2(source_repo / "models" / "tasks.py", copied_repo / "models")
@@ -319,6 +323,59 @@ def test_two_gpu_smoke_expands_registry_tasks_with_serial_queues_and_contained_o
     assert all(row.split("\t")[5] == "PASS" for row in rows[1:])
 
 
+def test_eight_gpu_entry_distributes_exact_matrix_over_eight_serial_queues(tmp_path):
+    repo, env, output_root, record = _harness(tmp_path)
+    env.pop("GPUS", None)
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_8gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    events = [event for event in _events(record) if event["kind"] == "run"]
+    assert len(events) == TASK_COUNT == 68
+    assert Counter(event["gpu"] for event in events) == Counter(
+        {"0": 9, "1": 9, "2": 9, "3": 9, "4": 8, "5": 8, "6": 8, "7": 8}
+    )
+    observed_gpu_by_key = {event["key"]: event["gpu"] for event in events}
+    assert len(observed_gpu_by_key) == TASK_COUNT
+    for ordinal, task in enumerate(TASKS):
+        key = f"{task.seq_len}|{task.pred_len}|{task.dataset}|{task.model}|{task.mode}"
+        assert observed_gpu_by_key[key] == str(ordinal % 8)
+    assert all(not event.get("overlap", False) for event in events)
+    assert any(
+        left["started_at"] < right["finished_at"] and right["started_at"] < left["finished_at"]
+        for left in events
+        for right in events
+        if left["gpu"] != right["gpu"]
+    )
+    assert all(event["args"][event["args"].index("--device") + 1] == "cuda:0" for event in events)
+    rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
+    assert rows[0] == SUMMARY_HEADER and len(rows) == TASK_COUNT + 1
+    assert [row.split("\t")[8] for row in rows[1:]] == [str(ordinal % 8) for ordinal in range(68)]
+    assert all(row.split("\t")[5] == "PASS" for row in rows[1:])
+
+
+def test_eight_gpu_entry_maps_queue_slots_to_configured_physical_ordinals(tmp_path):
+    repo, env, output_root, record = _harness(tmp_path)
+    configured_gpus = ("9", "3", "11", "5", "13", "7", "15", "1")
+    env["GPUS"] = " ".join(configured_gpus)
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_8gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    events = [event for event in _events(record) if event["kind"] == "run"]
+    observed_gpu_by_key = {event["key"]: event["gpu"] for event in events}
+    assert len(events) == len(observed_gpu_by_key) == TASK_COUNT
+    for ordinal, task in enumerate(TASKS):
+        key = f"{task.seq_len}|{task.pred_len}|{task.dataset}|{task.model}|{task.mode}"
+        assert observed_gpu_by_key[key] == configured_gpus[ordinal % 8]
+    rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
+    assert [row.split("\t")[8] for row in rows[1:]] == [
+        configured_gpus[ordinal % 8] for ordinal in range(TASK_COUNT)
+    ]
+
+
 @pytest.mark.parametrize("gpus", ["0,1 0", "00 0", "0 00", "-1 0", "0 gpu", "0 GPU-12345678"])
 def test_invalid_gpu_tokens_fail_before_any_fake_worker_run(tmp_path, gpus):
     repo, env, output_root, record = _harness(tmp_path)
@@ -331,6 +388,55 @@ def test_invalid_gpu_tokens_fail_before_any_fake_worker_run(tmp_path, gpus):
     assert "canonical distinct physical GPU ordinals" in result.stderr
     assert not record.exists() or not [event for event in _events(record) if event["kind"] == "run"]
     assert not (output_root / "smoke_summary.tsv").exists()
+
+
+@pytest.mark.parametrize(
+    "gpus",
+    [
+        "0 1 2 3 4 5 6",
+        "0 1 2 3 4 5 6 7 8",
+        "0 1 2 3 4 5 6 6",
+        "0 1 2 3 0 5 6 7",
+        "7 1 2 3 4 5 6 7",
+        "0 1 2 3 4 5 6 07",
+        "0 1 2 3 4 5 6 -1",
+        "0 1 2 3 4 5 6 GPU-12345678",
+        "0 1 2\t3 4 5 6 7",
+        "0 1 2\n3 4 5 6 7",
+    ],
+)
+def test_eight_gpu_entry_rejects_noncanonical_or_nonunique_gpu_sets_before_catalog(tmp_path, gpus):
+    repo, env, output_root, record = _harness(tmp_path)
+    env["GPUS"] = gpus
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_8gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "exactly eight canonical distinct physical GPU ordinals" in result.stderr
+    assert not record.exists()
+    assert not (output_root / "smoke_summary.tsv").exists()
+
+
+@pytest.mark.parametrize(
+    "core_args",
+    [
+        (),
+        ("2",),
+        ("4", "0 1 2 3"),
+        ("2", "0 2"),
+        ("8", "0 1 2 3 4 5 6 8"),
+    ],
+)
+def test_shared_core_rejects_nonfixed_invocations_before_side_effects(tmp_path, core_args):
+    repo, env, output_root, record = _harness(tmp_path)
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "_run_all_foundation_models_fixed_gpu.sh"), *core_args],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert not record.exists()
+    assert not output_root.exists()
 
 
 def test_in_root_output_symlink_aliases_are_rejected_before_workers_start(tmp_path):
@@ -382,6 +488,28 @@ def test_valid_resume_skips_every_task_and_keeps_original_gpu_provenance(tmp_pat
     assert len([event for event in _events(record) if event["kind"] == "run"]) == before
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
     assert Counter(row.split("\t")[8] for row in rows[1:]) == Counter({"0": TASK_COUNT // 2, "1": TASK_COUNT // 2})
+
+
+def test_eight_gpu_entry_resumes_two_gpu_results_without_losing_original_gpu_provenance(tmp_path):
+    repo, env, output_root, record = _harness(tmp_path)
+    first = subprocess.run(
+        ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    before = len([event for event in _events(record) if event["kind"] == "run"])
+
+    env.update(RESUME="1", GPUS="2 3 4 5 6 7 8 9")
+    second = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_8gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert len([event for event in _events(record) if event["kind"] == "run"]) == before
+    rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
+    assert Counter(row.split("\t")[8] for row in rows[1:]) == Counter(
+        {"0": TASK_COUNT // 2, "1": TASK_COUNT // 2}
+    )
 
 
 def test_resume_accepts_crlf_predictions_with_matching_manifest_hash(tmp_path):
@@ -767,7 +895,16 @@ def test_full_run_branch_omits_smoke_and_publishes_full_summary(tmp_path):
 
 
 @pytest.mark.parametrize(("signal", "expected_return"), [(signal.SIGINT, 130), (signal.SIGTERM, 143)])
-def test_signal_kills_fake_descendants_and_preserves_prior_summary(tmp_path, signal, expected_return):
+@pytest.mark.parametrize(
+    ("script_name", "gpus", "minimum_pids"),
+    [
+        ("run_all_foundation_models_2gpu.sh", "0 1", 6),
+        ("run_all_foundation_models_8gpu.sh", "0 1 2 3 4 5 6 7", 24),
+    ],
+)
+def test_signal_kills_fake_descendants_and_preserves_prior_summary(
+    tmp_path, signal, expected_return, script_name, gpus, minimum_pids
+):
     repo, env, output_root, _record = _harness(tmp_path)
     first = subprocess.run(
         ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
@@ -777,9 +914,17 @@ def test_signal_kills_fake_descendants_and_preserves_prior_summary(tmp_path, sig
     summary = output_root / "smoke_summary.tsv"
     prior = summary.read_bytes()
     pid_dir = tmp_path / "signal-pids"
-    signal_env = dict(env, SMOKE="1", RESUME="0", FAKE_LONG_SLEEP="1", FAKE_RUN_SLEEP="30", FAKE_PID_DIR=str(pid_dir))
+    signal_env = dict(
+        env,
+        SMOKE="1",
+        RESUME="0",
+        GPUS=gpus,
+        FAKE_LONG_SLEEP="1",
+        FAKE_RUN_SLEEP="30",
+        FAKE_PID_DIR=str(pid_dir),
+    )
     process = subprocess.Popen(
-        ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
+        ["bash", str(repo / "scripts" / script_name)],
         cwd=repo, env=signal_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     pids = []
@@ -789,10 +934,10 @@ def test_signal_kills_fake_descendants_and_preserves_prior_summary(tmp_path, sig
             pids = [int(path.read_text()) for path in pid_dir.glob("runner-*")]
             pids += [int(path.read_text()) for path in pid_dir.glob("child-*")]
             pids += [int(path.read_text()) for path in pid_dir.glob("grandchild-*")]
-            if len(pids) >= 6:
+            if len(pids) >= minimum_pids:
                 break
             time.sleep(0.05)
-        assert len(pids) >= 6
+        assert len(pids) >= minimum_pids
         process.send_signal(signal)
         assert process.wait(timeout=10) == expected_return
         deadline = time.monotonic() + 5
