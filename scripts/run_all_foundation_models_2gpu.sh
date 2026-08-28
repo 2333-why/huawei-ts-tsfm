@@ -573,7 +573,11 @@ for name, artifact in (("best_sha256", "best.pt"), ("predictions_sha256", "predi
 
 predictions = output / "predictions.csv"
 prediction_lines = predictions.read_bytes().split(b"\n")
-if not prediction_lines or prediction_lines[0] != b"issue_time,target_time,horizon_minutes,y_true,y_pred":
+expected_prediction_header = b"issue_time,target_time,horizon_minutes,y_true,y_pred"
+if not prediction_lines or prediction_lines[0] not in (
+    expected_prediction_header,
+    expected_prediction_header + b"\r",
+):
     fail("predictions header mismatch")
 if len(prediction_lines) < 3 or prediction_lines[-1] != b"":
     fail("predictions must contain a terminated data row")

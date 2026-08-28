@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -254,6 +255,26 @@ def _events(record: Path):
     return [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
 
 
+def _replace_prediction_artifact_and_manifest_hash(output: Path, payload: bytes):
+    predictions = output / "predictions.csv"
+    predictions.write_bytes(payload)
+    manifest = output / "completion.tsv"
+    rows = manifest.read_text(encoding="utf-8").splitlines()
+    fields = rows[1].split("\t")
+    fields[15] = hashlib.sha256(payload).hexdigest()
+    manifest.write_text(rows[0] + "\n" + "\t".join(fields) + "\n", encoding="utf-8")
+
+
+def _prediction_payload(
+    header: bytes,
+    *,
+    line_ending: bytes = b"\n",
+    terminate_data_row: bool = True,
+) -> bytes:
+    data_row = b"2025-01-01T00:00:00,2025-01-01T00:05:00,5,1.0,1.0"
+    return header + line_ending + data_row + (line_ending if terminate_data_row else b"")
+
+
 def test_two_gpu_smoke_expands_registry_tasks_with_serial_queues_and_contained_outputs(tmp_path):
     repo, env, output_root, record = _harness(tmp_path)
     result = subprocess.run(
@@ -361,6 +382,86 @@ def test_valid_resume_skips_every_task_and_keeps_original_gpu_provenance(tmp_pat
     assert len([event for event in _events(record) if event["kind"] == "run"]) == before
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
     assert Counter(row.split("\t")[8] for row in rows[1:]) == Counter({"0": TASK_COUNT // 2, "1": TASK_COUNT // 2})
+
+
+def test_resume_accepts_crlf_predictions_with_matching_manifest_hash(tmp_path):
+    repo, env, output_root, record = _harness(tmp_path)
+    first = subprocess.run(
+        ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    output = output_root / "seq48_pred1" / "skippd_luoyang" / "Sundial" / "zero_shot"
+    payload = _prediction_payload(
+        b"issue_time,target_time,horizon_minutes,y_true,y_pred",
+        line_ending=b"\r\n",
+    )
+    _replace_prediction_artifact_and_manifest_hash(output, payload)
+    manifest_fields = (output / "completion.tsv").read_text(encoding="utf-8").splitlines()[1].split("\t")
+    assert manifest_fields[15] == hashlib.sha256(payload).hexdigest()
+    assert (output / "predictions.csv").read_bytes() == payload
+    before = len([event for event in _events(record) if event["kind"] == "run"])
+
+    env.update(RESUME="1", GPUS="2 3")
+    second = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert len([event for event in _events(record) if event["kind"] == "run"]) == before
+    rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
+    assert len(rows) == TASK_COUNT + 1
+    assert all(row.split("\t")[5] == "PASS" for row in rows[1:])
+    assert (output / "predictions.csv").read_bytes() == payload
+    assert manifest_fields[15] == hashlib.sha256((output / "predictions.csv").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _prediction_payload(
+            b"issue_time,target_time,horizon_minutes,y_true,y_pred\r",
+            line_ending=b"\r\n",
+        ),
+        _prediction_payload(
+            b"issue_time,target_time,horizon_minutes,y_true,wrong_prediction",
+        ),
+        _prediction_payload(
+            b"issue_time,target_time,horizon_minutes,y_true,y_pred,extra",
+        ),
+        _prediction_payload(
+            b"issue_time,target_time,horizon_minutes,y_true,y_pred",
+            terminate_data_row=False,
+        ),
+    ],
+)
+def test_resume_reruns_task_for_invalid_prediction_boundaries(tmp_path, payload):
+    repo, env, output_root, record = _harness(tmp_path)
+    first = subprocess.run(
+        ["bash", str(repo / "scripts" / "smoke_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    output = output_root / "seq48_pred1" / "skippd_luoyang" / "Sundial" / "zero_shot"
+    _replace_prediction_artifact_and_manifest_hash(output, payload)
+    manifest_fields = (output / "completion.tsv").read_text(encoding="utf-8").splitlines()[1].split("\t")
+    assert manifest_fields[15] == hashlib.sha256(payload).hexdigest()
+    before = len([event for event in _events(record) if event["kind"] == "run"])
+
+    env.update(RESUME="1", GPUS="2 3")
+    second = subprocess.run(
+        ["bash", str(repo / "scripts" / "run_all_foundation_models_2gpu.sh")],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    events = [event for event in _events(record) if event["kind"] == "run"]
+    assert len(events) == before + 1
+    assert (events[-1]["seq_len"], events[-1]["pred_len"], events[-1]["dataset"], events[-1]["model"], events[-1]["mode"]) == (
+        48, 1, "skippd_luoyang", "Sundial", "zero_shot"
+    )
+    rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
+    assert len(rows) == TASK_COUNT + 1
+    assert all(row.split("\t")[5] == "PASS" for row in rows[1:])
 
 
 def _mutate_completion(output: Path, mutation: str):
