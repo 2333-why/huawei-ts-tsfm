@@ -734,6 +734,77 @@ class _RecordingTimeMoEModel(nn.Module):
         self.loss_function = nn.HuberLoss(reduction="none", delta=1.0)
 
 
+def ForCausalLMLoss(predictions, labels, vocab_size):
+    del predictions, labels, vocab_size
+    raise AssertionError("the Transformers Causal loss must not be called")
+
+
+class _CollisionBackbone(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, input_ids, **kwargs):
+        del kwargs
+        hidden = torch.zeros(
+            input_ids.shape[0], input_ids.shape[1], 1,
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        return types.SimpleNamespace(last_hidden_state=hidden + self.weight)
+
+
+class _CollisionHead(nn.Module):
+    def __init__(self, horizon):
+        super().__init__()
+        self.weight = nn.Parameter(torch.arange(2.0, 2.0 * horizon + 1.0, 2.0).reshape(1, horizon))
+
+    def forward(self, hidden):
+        return hidden.matmul(self.weight)
+
+
+class _TimeMoECausalLossCollisionModel(nn.Module):
+    @property
+    def loss_function(self):
+        return ForCausalLMLoss
+
+    def __init__(self):
+        super().__init__()
+        self.config = types.SimpleNamespace(input_size=1, horizon_lengths=[3])
+        self.model = _CollisionBackbone()
+        self.lm_heads = nn.ModuleList([_CollisionHead(3)])
+        self._modules["loss_function"] = nn.HuberLoss(reduction="none", delta=2.0)
+
+
+def test_timemoe_training_loss_prefers_registered_native_loss_over_transformers_property():
+    from models.TimeMoE import TimeMoEBackend
+
+    model = _TimeMoECausalLossCollisionModel()
+    native_loss = dict(model.named_children())["loss_function"]
+    assert isinstance(native_loss, nn.HuberLoss)
+    assert native_loss.reduction == "none"
+    assert native_loss.delta == 2.0
+    with pytest.raises(
+        TypeError,
+        match=r"ForCausalLMLoss\(\) missing 1 required positional argument: 'vocab_size'",
+    ):
+        model.loss_function(torch.zeros(1, 1, 1), torch.zeros(1, 1, 1))
+
+    backend = _backend_without_loading(TimeMoEBackend, model)
+    history = torch.zeros(1, 2, 1)
+    target = torch.tensor([[[0.0], [1000.0]]])
+    target_mask = torch.tensor([[True, False]])
+
+    loss = backend.training_loss(history, target, target_mask)
+
+    assert torch.allclose(loss.detach(), torch.tensor(2.0), atol=1e-6)
+    assert loss.ndim == 0 and loss.requires_grad and torch.isfinite(loss)
+    loss.backward()
+    assert model.model.weight.grad is not None and model.model.weight.grad.item() > 0.0
+    assert model.lm_heads[0].weight.grad is not None
+    assert torch.allclose(model.lm_heads[0].weight.grad[0, 1:], torch.zeros(2), atol=1e-6)
+
+
 @pytest.mark.parametrize(
     ("horizon", "head_index"), [(1, 0), (16, 2), (48, 3)]
 )

@@ -288,7 +288,11 @@ class TimeMoEBackend(_GenerateBackend):
         if tuple(predictions.shape) != tuple(normalized_target.shape):
             raise ValueError("TimeMoE native prediction shape does not match target")
 
-        loss_function = getattr(self.model, "loss_function", None)
+        loss_function = None
+        if isinstance(self.model, nn.Module):
+            loss_function = dict(self.model.named_children()).get("loss_function")
+        if loss_function is None:
+            loss_function = getattr(self.model, "loss_function", None)
         if loss_function is None or not callable(loss_function):
             raise ValueError("TimeMoE model is missing its native loss_function")
         loss_values = loss_function(predictions, normalized_target)
