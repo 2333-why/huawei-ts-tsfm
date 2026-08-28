@@ -60,7 +60,9 @@ def _mean_tensor(output: Any, batch: int, pred_len: int) -> torch.Tensor:
         output = torch.stack(rows, dim=0)
     if not torch.is_tensor(output):
         raise ValueError("TiRex point forecast must be a torch.Tensor")
-    if output.ndim == 1 and batch == 1:
+    if output.ndim == 1 and pred_len == 1 and tuple(output.shape) == (batch,):
+        output = output.unsqueeze(1)
+    elif output.ndim == 1 and batch == 1:
         output = output.unsqueeze(0)
     elif output.ndim == 3 and tuple(output.shape[:2]) == (batch, 1):
         output = output[:, 0, :]

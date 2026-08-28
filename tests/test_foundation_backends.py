@@ -998,6 +998,59 @@ def test_tirex_loader_uses_hf_kwargs_and_rejects_training(monkeypatch):
         backend.training_loss(history, torch.ones(1, 1, 1), torch.ones(1, 1, dtype=torch.bool))
 
 
+class _SingletonHorizonTiRexModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(1.0))
+
+    def forecast(self, *, context, prediction_length):
+        batch = context.shape[0]
+        quantiles = torch.zeros(
+            batch,
+            prediction_length,
+            9,
+            dtype=context.dtype,
+            device=context.device,
+        )
+        mean = torch.tensor([7.25, -2.5], dtype=context.dtype, device=context.device)
+        return quantiles, mean
+
+
+def _install_singleton_horizon_tirex(monkeypatch):
+    module = types.ModuleType("tirex")
+    model = _SingletonHorizonTiRexModel()
+
+    def load_model(model_id, **kwargs):
+        return model
+
+    module.load_model = load_model
+    monkeypatch.setitem(sys.modules, "tirex", module)
+
+
+def test_tirex_predict_preserves_batch_for_singleton_horizon_mean(monkeypatch):
+    _install_singleton_horizon_tirex(monkeypatch)
+    from models.TiRex import TiRexBackend
+    from models.registry import get_model_spec
+
+    backend = TiRexBackend(get_model_spec("TiRex"), device="cpu")
+    forecast = backend.predict(torch.ones(2, 4, 1), 1)
+
+    assert forecast.shape == (2, 1, 1)
+    assert torch.equal(forecast, torch.tensor([[[7.25]], [[-2.5]]]))
+    assert torch.isfinite(forecast).all()
+
+
+def test_tirex_rejects_singleton_batch_vector_for_multi_step_horizon(monkeypatch):
+    _install_singleton_horizon_tirex(monkeypatch)
+    from models.TiRex import TiRexBackend
+    from models.registry import get_model_spec
+
+    backend = TiRexBackend(get_model_spec("TiRex"), device="cpu")
+
+    with pytest.raises(ValueError):
+        backend.predict(torch.ones(2, 4, 1), 2)
+
+
 class _FakeTimesFMModel(nn.Module):
     def __init__(self):
         super().__init__()
