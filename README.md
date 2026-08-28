@@ -250,9 +250,17 @@ implementation directory.
 
 ## Current environment limitation
 
-The specified `/opt/data/private/penv/time/bin/python` is Python 3.8.18 with
-Torch 2.3.1, Transformers 4.46.2, and PEFT 0.13.2.  Chronos2, TiRex, and
-TimesFM checkpoint/CUDA smoke tests were not run in that environment because
-the modern upstream profile requires Python 3.10 or newer and the optional
-packages/checkpoints are not present.  Fake backend and queue tests validate
-contracts only; they do not prove compatibility with real weights.
+The specified `/opt/data/private/penv/time/bin/python` remains the Python
+3.8.18 legacy profile with Torch 2.3.1, Transformers 4.46.2, and PEFT
+0.13.2; it cannot host all five modern backends.
+
+Verified on 2026-08-28 with `.venv/tsfm-modern` (Python 3.11.0, torch
+2.4.1 with CUDA 12.1 runtime, Transformers 5.3.0, PEFT 0.18.1,
+chronos-forecasting 2.3.1, and tirex-ts 1.4.2), the canonical
+real-checkpoint CUDA smoke matrix ran across two NVIDIA RTX 4090 GPUs and
+completed `68/68 PASS`.  The verified checkpoint pins were
+`thuml/sundial-base-128m@3212e42564493f520593e5414af4367fc4b49226`,
+`Maple728/TimeMoE-50M@446753ee48ff3726d0606a81d0092d54acee995e`,
+`amazon/chronos-2@29ec3766d36d6f73f0696f85560a422f50e8498c`,
+`NX-AI/TiRex@63c740922493f5fbe60b277609ec62babfba2762`, and
+`google/timesfm-2.5-200m-transformers@5a9806b9b291fad9233b5249d88263f1846304d3`.
