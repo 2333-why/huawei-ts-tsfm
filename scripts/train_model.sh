@@ -5,7 +5,9 @@ set -euo pipefail
 # The runner owns data loading, lifecycle accounting, and artifact validation;
 # this script only enumerates the example dataset/shape matrix.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${PYTHON:-/opt/data/private/penv/time/bin/python}"
+# Use the interpreter from the environment that is already active.  PYTHON can
+# still be overridden explicitly when a different executable is required.
+PYTHON="${PYTHON:-python}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export CUDA_VISIBLE_DEVICES
 

@@ -55,27 +55,12 @@ four modes plus one TiRex zero-shot mode:
 
 `4 settings × (4 trainable models × 4 modes + 1 TiRex mode) = 68 tasks`.
 
-## Installation profiles
+## Runtime assumption
 
-Choose one standalone profile; the files are alternatives, not additive.
-
-For the current Python 3.8 base runtime:
-
-```bash
-/opt/data/private/penv/time/bin/python -m pip install -r requirements.txt
-```
-
-For a fresh Python 3.10-or-newer runtime, create a separate environment and
-install the modern profile:
-
-```bash
-python3.10 -m venv .venv-tsfm-modern
-.venv-tsfm-modern/bin/python -m pip install -r requirements-modern.txt
-```
-
-The modern profile is standalone and deliberately does not include the base
-requirements file.  Chronos2, TiRex, and the TimesFM 2.5 Transformers class
-require the modern Python/package profile.
+Activate your existing Python environment before running any command in this
+repository.  The repository does not create, activate, or modify an
+environment.  All experiment scripts use `python` from the active shell by
+default; set `PYTHON=/path/to/python` only when an explicit override is needed.
 
 ## Runner
 
@@ -83,14 +68,14 @@ Run from the repository root.  The catalog commands do not load optional model
 backends:
 
 ```bash
-/opt/data/private/penv/time/bin/python run.py --list-models
-/opt/data/private/penv/time/bin/python run.py --list-modes
+python run.py --list-models
+python run.py --list-modes
 ```
 
-Canonical legacy-profile single-run example (Sundial):
+Single-run example (Sundial):
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 /opt/data/private/penv/time/bin/python -u run.py \
+CUDA_VISIBLE_DEVICES=0 python -u run.py \
   --dataset skippd_luoyang \
   --model Sundial \
   --mode zero_shot \
@@ -103,7 +88,7 @@ CUDA_VISIBLE_DEVICES=0 /opt/data/private/penv/time/bin/python -u run.py \
 The Time-Series-Library-style aliases are also supported:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 .venv-tsfm-modern/bin/python -u run.py \
+CUDA_VISIBLE_DEVICES=0 python -u run.py \
   --data skippd_luoyang \
   --model TimesFM \
   --model_id timesfm_skippd_adapter_example \
@@ -117,9 +102,6 @@ CUDA_VISIBLE_DEVICES=0 .venv-tsfm-modern/bin/python -u run.py \
   --device cuda:0 \
   --output_dir results_foundation_models/example-adapter
 ```
-
-The alias example uses the modern profile because TimesFM 2.5 is not available
-in the current Python 3.8 base environment.
 
 `--data` aliases `--dataset`; `--train_epochs` aliases `--epochs`; and
 `--debug` aliases `--smoke`.  `--debug` requires an explicit `True` or
@@ -141,15 +123,14 @@ dataset/window rows.  Useful variables are `PYTHON`, `CUDA_VISIBLE_DEVICES`,
 `DEBUG_MODE`, and `RESULTS_ROOT`.
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python DEBUG_MODE=1 CUDA_VISIBLE_DEVICES=0 \
+DEBUG_MODE=1 CUDA_VISIBLE_DEVICES=0 \
   bash scripts/train_model.sh
 ```
 
-The normal branch uses the same modern interpreter and runs the four real
-dataset/window rows:
+The normal branch runs the four real dataset/window rows:
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python DEBUG_MODE=0 CUDA_VISIBLE_DEVICES=0 \
+DEBUG_MODE=0 CUDA_VISIBLE_DEVICES=0 \
   bash scripts/train_model.sh
 ```
 
@@ -175,24 +156,20 @@ Relevant variables are:
 Example smoke invocation:
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS="0 1" \
 RESUME=0 \
 OUTPUT_ROOT=results_foundation_models_smoke \
   bash scripts/smoke_all_foundation_models_2gpu.sh
 ```
 
-For a full batch run, or to resume validated tasks, use the same modern
-interpreter and the non-smoke script:
+For a full batch run, or to resume validated tasks, use the non-smoke script:
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS="0 1" \
 RESUME=0 \
 OUTPUT_ROOT=results_foundation_models \
   bash scripts/run_all_foundation_models_2gpu.sh
 
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS="0 1" \
 RESUME=1 \
 OUTPUT_ROOT=results_foundation_models \
@@ -221,7 +198,6 @@ validate before a task is resumed.  Relevant variables are `PYTHON`,
 Example eight-GPU smoke invocation:
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS='0 1 2 3 4 5 6 7' \
 SMOKE=1 \
 RESUME=0 \
@@ -232,14 +208,12 @@ OUTPUT_ROOT=results_foundation_models_smoke \
 For a full eight-GPU batch run, or to resume validated tasks:
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS='0 1 2 3 4 5 6 7' \
 SMOKE=0 \
 RESUME=0 \
 OUTPUT_ROOT=results_foundation_models \
   bash scripts/run_all_foundation_models_8gpu.sh
 
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS='0 1 2 3 4 5 6 7' \
 SMOKE=0 \
 RESUME=1 \
@@ -247,37 +221,6 @@ OUTPUT_ROOT=results_foundation_models \
 SUMMARY_PATH=results_foundation_models/run_summary.tsv \
   bash scripts/run_all_foundation_models_8gpu.sh
 ```
-
-## Cache warming and offline preflight
-
-To warm exact pinned revisions, use one consistent local Hub cache:
-
-```bash
-export HF_HOME="$PWD/.cache/huggingface"
-hf download thuml/sundial-base-128m --revision 3212e42564493f520593e5414af4367fc4b49226
-hf download Maple728/TimeMoE-50M --revision 446753ee48ff3726d0606a81d0092d54acee995e
-hf download amazon/chronos-2 --revision 29ec3766d36d6f73f0696f85560a422f50e8498c
-hf download NX-AI/TiRex --revision 63c740922493f5fbe60b277609ec62babfba2762
-hf download google/timesfm-2.5-200m-transformers --revision 5a9806b9b291fad9233b5249d88263f1846304d3
-```
-
-Then inspect readiness without contacting the Hub:
-
-```bash
-/opt/data/private/penv/time/bin/python \
-  scripts/check_foundation_environment.py --offline --json
-```
-
-Offline preflight is credential-safe and local-cache-only.  It never downloads
-weights or installs packages.  A failed exit code reports structured blockers
-such as an incompatible Python floor, missing package, missing cache file,
-missing dataset, or unavailable GPU.
-
-With the specified base interpreter, the preflight is expected to exit `1` and
-report Python-floor/package blockers for Chronos2, TiRex, and TimesFM.  Run the
-same command from a provisioned modern environment after installing the modern
-profile and warming the pinned cache; a real checkpoint smoke is still a
-separate verification step.
 
 ## Artifacts and resume
 
@@ -297,20 +240,3 @@ missing, changed, or tampered artifact is rerun.
 The historical result-directory component `foundation_models` is retained for
 resume compatibility.  It is a result path only, not a Python package or
 implementation directory.
-
-## Current environment limitation
-
-The specified `/opt/data/private/penv/time/bin/python` remains the Python
-3.8.18 legacy profile with Torch 2.3.1, Transformers 4.46.2, and PEFT
-0.13.2; it cannot host all five modern backends.
-
-Verified on 2026-08-28 with `.venv/tsfm-modern` (Python 3.11.0, torch
-2.4.1 with CUDA 12.1 runtime, Transformers 5.3.0, PEFT 0.18.1,
-chronos-forecasting 2.3.1, and tirex-ts 1.4.2), the canonical
-real-checkpoint CUDA smoke matrix ran across two NVIDIA RTX 4090 GPUs and
-completed `68/68 PASS`.  The verified checkpoint pins were
-`thuml/sundial-base-128m@3212e42564493f520593e5414af4367fc4b49226`,
-`Maple728/TimeMoE-50M@446753ee48ff3726d0606a81d0092d54acee995e`,
-`amazon/chronos-2@29ec3766d36d6f73f0696f85560a422f50e8498c`,
-`NX-AI/TiRex@63c740922493f5fbe60b277609ec62babfba2762`, and
-`google/timesfm-2.5-200m-transformers@5a9806b9b291fad9233b5249d88263f1846304d3`.

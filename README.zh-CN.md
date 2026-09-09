@@ -50,39 +50,25 @@ TiRex zero-shot 模式：
 
 `4 settings × (4 trainable models × 4 modes + 1 TiRex mode) = 68 tasks`。
 
-## 安装配置
+## 运行环境约定
 
-选择一个独立 profile；这些文件是互相替代的配置，不能叠加。
-
-对于当前的 Python 3.8 基础运行时：
-
-```bash
-/opt/data/private/penv/time/bin/python -m pip install -r requirements.txt
-```
-
-对于全新的 Python 3.10 或更高版本运行时，创建独立环境并安装现代 profile：
-
-```bash
-python3.10 -m venv .venv-tsfm-modern
-.venv-tsfm-modern/bin/python -m pip install -r requirements-modern.txt
-```
-
-现代 profile 是独立的，并且有意不包含基础 requirements 文件。Chronos2、TiRex 和
-TimesFM 2.5 Transformers class 要求使用现代 Python/包 profile。
+运行本仓库前请先激活您已有的 Python 环境。本仓库不会创建、激活或修改任何环境。
+所有实验脚本默认直接使用当前 shell 中的 `python`；只有确实需要指定其他解释器时，
+才设置 `PYTHON=/path/to/python`。
 
 ## 运行器
 
 从仓库根目录运行。目录命令不会加载可选模型后端：
 
 ```bash
-/opt/data/private/penv/time/bin/python run.py --list-models
-/opt/data/private/penv/time/bin/python run.py --list-modes
+python run.py --list-models
+python run.py --list-modes
 ```
 
-规范的 legacy-profile 单次运行示例（Sundial）：
+单次运行示例（Sundial）：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 /opt/data/private/penv/time/bin/python -u run.py \
+CUDA_VISIBLE_DEVICES=0 python -u run.py \
   --dataset skippd_luoyang \
   --model Sundial \
   --mode zero_shot \
@@ -95,7 +81,7 @@ CUDA_VISIBLE_DEVICES=0 /opt/data/private/penv/time/bin/python -u run.py \
 也支持 Time-Series-Library 风格的别名：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 .venv-tsfm-modern/bin/python -u run.py \
+CUDA_VISIBLE_DEVICES=0 python -u run.py \
   --data skippd_luoyang \
   --model TimesFM \
   --model_id timesfm_skippd_adapter_example \
@@ -109,8 +95,6 @@ CUDA_VISIBLE_DEVICES=0 .venv-tsfm-modern/bin/python -u run.py \
   --device cuda:0 \
   --output_dir results_foundation_models/example-adapter
 ```
-
-该别名示例使用现代 profile，因为当前 Python 3.8 基础环境不提供 TimesFM 2.5。
 
 `--data` 是 `--dataset` 的别名；`--train_epochs` 是 `--epochs` 的别名；`--debug` 是
 `--smoke` 的别名。`--debug` 必须显式提供 `True` 或 `False`。只有两个拼写的值一致时，
@@ -128,14 +112,14 @@ registry 中固定的检查点 ID 或 revision。`--task_name` 和 `--is_trainin
 `RESULTS_ROOT`。
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python DEBUG_MODE=1 CUDA_VISIBLE_DEVICES=0 \
+DEBUG_MODE=1 CUDA_VISIBLE_DEVICES=0 \
   bash scripts/train_model.sh
 ```
 
-普通分支使用相同的现代解释器，并运行四个真实数据集/窗口行：
+普通分支运行四个真实数据集/窗口行：
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python DEBUG_MODE=0 CUDA_VISIBLE_DEVICES=0 \
+DEBUG_MODE=0 CUDA_VISIBLE_DEVICES=0 \
   bash scripts/train_model.sh
 ```
 
@@ -160,23 +144,20 @@ PYTHON=.venv-tsfm-modern/bin/python DEBUG_MODE=0 CUDA_VISIBLE_DEVICES=0 \
 Smoke 示例：
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS="0 1" \
 RESUME=0 \
 OUTPUT_ROOT=results_foundation_models_smoke \
   bash scripts/smoke_all_foundation_models_2gpu.sh
 ```
 
-完整批处理或恢复已验证任务时，使用相同的现代解释器和非 smoke 脚本：
+完整批处理或恢复已验证任务时，使用非 smoke 脚本：
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS="0 1" \
 RESUME=0 \
 OUTPUT_ROOT=results_foundation_models \
   bash scripts/run_all_foundation_models_2gpu.sh
 
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS="0 1" \
 RESUME=1 \
 OUTPUT_ROOT=results_foundation_models \
@@ -201,7 +182,6 @@ SUMMARY_PATH=results_foundation_models/run_summary.tsv \
 八 GPU smoke 调用示例：
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS='0 1 2 3 4 5 6 7' \
 SMOKE=1 \
 RESUME=0 \
@@ -212,14 +192,12 @@ OUTPUT_ROOT=results_foundation_models_smoke \
 完整的八 GPU 批处理，或恢复已验证任务：
 
 ```bash
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS='0 1 2 3 4 5 6 7' \
 SMOKE=0 \
 RESUME=0 \
 OUTPUT_ROOT=results_foundation_models \
   bash scripts/run_all_foundation_models_8gpu.sh
 
-PYTHON=.venv-tsfm-modern/bin/python \
 GPUS='0 1 2 3 4 5 6 7' \
 SMOKE=0 \
 RESUME=1 \
@@ -227,34 +205,6 @@ OUTPUT_ROOT=results_foundation_models \
 SUMMARY_PATH=results_foundation_models/run_summary.tsv \
   bash scripts/run_all_foundation_models_8gpu.sh
 ```
-
-## 缓存预热与离线预检
-
-要预热精确的固定 revision，请使用一个一致的本地 Hub 缓存：
-
-```bash
-export HF_HOME="$PWD/.cache/huggingface"
-hf download thuml/sundial-base-128m --revision 3212e42564493f520593e5414af4367fc4b49226
-hf download Maple728/TimeMoE-50M --revision 446753ee48ff3726d0606a81d0092d54acee995e
-hf download amazon/chronos-2 --revision 29ec3766d36d6f73f0696f85560a422f50e8498c
-hf download NX-AI/TiRex --revision 63c740922493f5fbe60b277609ec62babfba2762
-hf download google/timesfm-2.5-200m-transformers --revision 5a9806b9b291fad9233b5249d88263f1846304d3
-```
-
-然后在不联系 Hub 的情况下检查就绪状态：
-
-```bash
-/opt/data/private/penv/time/bin/python \
-  scripts/check_foundation_environment.py --offline --json
-```
-
-离线预检不会暴露凭据，并且只使用本地缓存。它不会下载权重或安装包。失败的退出码会
-报告结构化阻塞项，例如 Python 版本下限不符、缺少包、缺少缓存文件、缺少数据集或 GPU
-不可用。
-
-使用指定的基础解释器时，预检预期退出码为 `1`，并为 Chronos2、TiRex 和 TimesFM 报告
-Python 版本下限/包阻塞项。在配置好的现代环境中安装现代 profile 并预热固定缓存后，
-使用同一命令；真实检查点 smoke 仍是独立的验证步骤。
 
 ## 产物与恢复
 
@@ -272,18 +222,3 @@ TSV 汇总。设置 `RESUME=1` 时，只有在身份、schema、数据指纹、�
 
 历史结果目录组件 `foundation_models` 为恢复兼容性而保留。它只是结果路径，不是 Python
 包或实现目录。
-
-## 当前环境限制
-
-指定的 `/opt/data/private/penv/time/bin/python` 仍是 Python 3.8.18 legacy profile，使用
-Torch 2.3.1、Transformers 4.46.2 和 PEFT 0.13.2；它无法承载全部五个现代后端。
-
-在 2026-08-28 使用 `.venv/tsfm-modern` 验证（Python 3.11.0、torch 2.4.1 with CUDA 12.1
-runtime、Transformers 5.3.0、PEFT 0.18.1、chronos-forecasting 2.3.1 和 tirex-ts 1.4.2）
-时，规范的真实检查点 CUDA smoke 矩阵在两张 NVIDIA RTX 4090 GPU 上运行，并完成
-`68/68 PASS`。已验证的检查点固定值为
-`thuml/sundial-base-128m@3212e42564493f520593e5414af4367fc4b49226`、
-`Maple728/TimeMoE-50M@446753ee48ff3726d0606a81d0092d54acee995e`、
-`amazon/chronos-2@29ec3766d36d6f73f0696f85560a422f50e8498c`、
-`NX-AI/TiRex@63c740922493f5fbe60b277609ec62babfba2762` 和
-`google/timesfm-2.5-200m-transformers@5a9806b9b291fad9233b5249d88263f1846304d3`。

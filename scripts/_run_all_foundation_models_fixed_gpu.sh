@@ -24,7 +24,9 @@ esac
 GPU_ERROR="GPUS must contain exactly $GPU_COUNT_WORD canonical distinct physical GPU ordinals (for example: GPUS='$DEFAULT_GPUS')"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${PYTHON:-/opt/data/private/penv/time/bin/python}"
+# Run with the interpreter from the caller's active environment.  The public
+# entrypoints do not create, activate, or modify any Python environment.
+PYTHON="${PYTHON:-python}"
 CONFIG_PYTHON="${CONFIG_PYTHON:-$PYTHON}"
 SMOKE="${SMOKE:-0}"
 RESUME="${RESUME:-0}"
