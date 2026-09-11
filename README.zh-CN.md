@@ -59,17 +59,21 @@ TiRex zero-shot 模式：
 ### 当前 Python 低于 3.10 时的终端命令
 
 以下命令由用户在华为服务器终端中手动执行。`--override-channels` 会绕过 `.condarc`
-中失效的清华 Conda 源；后续 pip 安装仍继承服务器当前配置的华为 pip 源。
+中失效的清华 Conda 源，并且只访问华为内网仓库，不会回退到 `repo.anaconda.com`；后续
+pip 安装仍继承服务器当前配置的华为 pip 源。如果服务器管理员提供的 Conda 仓库地址
+不同，只需替换 `HUAWEI_CONDA_CHANNEL` 的值。
 
 ```bash
 cd /你的实际路径/huawei-ts-tsfm
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
 
+export HUAWEI_CONDA_CHANNEL="http://repo.myhuaweicloud.com/repository/anaconda/pkgs/main"
+
 conda create -n huawei-ts-tsfm-py310 \
   python=3.10 pip -y \
   --override-channels \
-  -c https://repo.anaconda.com/pkgs/main
+  -c "$HUAWEI_CONDA_CHANNEL"
 
 conda activate huawei-ts-tsfm-py310
 
