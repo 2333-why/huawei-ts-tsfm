@@ -28,6 +28,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # entrypoints do not create, activate, or modify any Python environment.
 PYTHON="${PYTHON:-python}"
 CONFIG_PYTHON="${CONFIG_PYTHON:-$PYTHON}"
+HF_HOME="${HF_HOME:-$ROOT_DIR/checkpoints_huggingface}"
+export HF_HOME
 SMOKE="${SMOKE:-0}"
 RESUME="${RESUME:-0}"
 GPUS="${GPUS:-$DEFAULT_GPUS}"

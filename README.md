@@ -62,6 +62,34 @@ repository.  The repository does not create, activate, or modify an
 environment.  All experiment scripts use `python` from the active shell by
 default; set `PYTHON=/path/to/python` only when an explicit override is needed.
 
+## Install dependencies and download checkpoints
+
+The following command installs into the environment that is already active; it
+does not create or activate a virtual environment.  It then downloads the
+pinned Sundial, TimeMoE, Chronos2, TiRex, and TimesFM revisions declared in
+`models/registry.py`:
+
+```bash
+bash scripts/setup_foundation_runtime.sh
+```
+
+The default cache is `checkpoints_huggingface/` under the repository, and the
+experiment scripts automatically reuse it.  If dependencies are already
+installed, download checkpoints only:
+
+```bash
+python scripts/download_foundation_weights.py
+```
+
+Set `HF_HOME=/path/to/huggingface-cache` consistently on setup, download, and
+experiment commands to use a different shared cache.  After downloading, run
+the offline readiness check with:
+
+```bash
+HF_HOME="$PWD/checkpoints_huggingface" \
+python scripts/check_foundation_environment.py --offline --json
+```
+
 ## Runner
 
 Run from the repository root.  The catalog commands do not load optional model

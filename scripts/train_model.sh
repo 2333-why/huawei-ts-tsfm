@@ -8,6 +8,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Use the interpreter from the environment that is already active.  PYTHON can
 # still be overridden explicitly when a different executable is required.
 PYTHON="${PYTHON:-python}"
+HF_HOME="${HF_HOME:-$ROOT_DIR/checkpoints_huggingface}"
+export HF_HOME
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export CUDA_VISIBLE_DEVICES
 

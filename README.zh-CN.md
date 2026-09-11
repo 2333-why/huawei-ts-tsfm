@@ -56,6 +56,31 @@ TiRex zero-shot 模式：
 所有实验脚本默认直接使用当前 shell 中的 `python`；只有确实需要指定其他解释器时，
 才设置 `PYTHON=/path/to/python`。
 
+## 安装依赖并下载权重
+
+以下命令直接安装到当前已激活环境，不会创建或切换虚拟环境。它随后按照
+`models/registry.py` 中的固定 revision 下载 Sundial、TimeMoE、Chronos2、TiRex 和
+TimesFM 权重：
+
+```bash
+bash scripts/setup_foundation_runtime.sh
+```
+
+默认缓存目录是仓库下的 `checkpoints_huggingface/`，实验脚本会自动复用该目录。如果依赖
+已经安装，只下载权重：
+
+```bash
+python scripts/download_foundation_weights.py
+```
+
+如服务器需要使用其他共享缓存，可在安装、下载和实验命令前统一设置
+`HF_HOME=/path/to/huggingface-cache`。下载完成后可离线检查：
+
+```bash
+HF_HOME="$PWD/checkpoints_huggingface" \
+python scripts/check_foundation_environment.py --offline --json
+```
+
 ## 运行器
 
 从仓库根目录运行。目录命令不会加载可选模型后端：
