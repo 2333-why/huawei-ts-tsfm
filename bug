@@ -1,34 +1,82 @@
+(PyTorch-2.1.0) [ma-user huawei-ts-tsfm-main]$conda config --show-sources
+conda config --show channels
+conda config --show default_channels
+conda config --show custom_channels
+conda config --show channel_alias
 
-(PyTorch-2.1.0) [ma-user huawei-ts-tsfm-main]$conda env create -n py3.10
+env | grep -Ei 'conda|pip|proxy|repo|mirror'
+==> /home/ma-user/.condarc <==
+ssl_verify: False
+channels:
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
+  - defaults
+default_channels:
+  - main
+show_channel_urls: True
 
-SpecNotFound: Invalid name, try the format: user/package
+channels:
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
+  - defaults
+default_channels:
+  - https://conda.anaconda.org/main
+custom_channels:
+  main: https://conda.anaconda.org
+  pkgs/pro: https://repo.anaconda.com
+channel_alias: https://conda.anaconda.org
+CONDA_EXE=/home/ma-user/anaconda3/bin/conda
+USER_CONDA_DIR=/home/ma-user/anaconda3
+CONDA_BIN=/modelarts/authoring/notebook-conda/envs/jp4/bin
+PIP_VERSION=20.3.3
+MA_CONDA_NAME=jp4
+PIP_TIMEOUT=120
+CONDA_PREFIX=/home/ma-user/anaconda3/envs/PyTorch-2.1.0
+TENSORBOARD_PROXY_URL=/29219ac6-c7ba-4b9d-aec8-8ceae036d6cf/proxy/%PORT%/
+CONDA_BASE_BIN=/modelarts/authoring/notebook-conda/bin
+ANACONDA_DIR=/home/ma-user/anaconda3
+IMAGE_REPO_URL=swr.cn-east-3.myhuaweicloud.com
+PIP_TRUSTED_HOST=repo.myhuaweicloud.com
+CONDA_PROMPT_MODIFIER=(PyTorch-2.1.0) 
+DEFAULT_CONDA_ENV_NAME=PyTorch-2.1.0
+SITE_PACKAGES_PATH=/home/ma-user/anaconda3/envs/PyTorch-2.1.0/lib/python3.7/site-packages
+_CE_CONDA=
+CONDA_SHLVL=2
+PIP_INDEX_URL=http://repo.myhuaweicloud.com/repository/pypi/simple/
+CONDA_DIR=/modelarts/authoring/notebook-conda/envs/jp4
+CONDA_PYTHON_EXE=/home/ma-user/anaconda3/bin/python
+CONDA_DEFAULT_ENV=PyTorch-2.1.0
+PATH=/home/ma-user/anaconda3/envs/PyTorch-2.1.0/bin:/home/ma-user/anaconda3/bin:/home/ma-user/anaconda3/condabin:/home/ma-user/anaconda3/envs/PyTorch-2.1.0/bin:/usr/local/openmpi/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/modelarts/authoring/notebook-conda/bin:/modelarts/authoring/notebook-conda/envs/jp4/bin:/home/ma-user/modelarts-dev/ma-cli/bin:/home/ma-user/anaconda3/envs/PyTorch-2.1.0/bin
+CONDA_BASE_DIR=/modelarts/authoring/notebook-conda
+CONDA_PREFIX_1=/home/ma-user/anaconda3
+(PyTorch-2.1.0) [ma-user huawei-ts-tsfm-main]$for channel in \
+  "http://repo.myhuaweicloud.com/repository/anaconda/pkgs/main" \
+  "https://repo.myhuaweicloud.com/repository/anaconda/pkgs/main" \
+  "http://repo.huaweicloud.com/repository/anaconda/pkgs/main" \
+  "https://repo.huaweicloud.com/repository/anaconda/pkgs/main" \
+  "http://mirrors.huaweicloud.com/repository/anaconda/pkgs/main" \
+  "https://mirrors.huaweicloud.com/repository/anaconda/pkgs/main"
+do
+  url="${channel}/linux-64/current_repodata.json"
+  code=$(curl -L -sS \
+    --connect-timeout 5 \
+    --max-time 20 \
+    --range 0-0 \
+    -o /dev/null \
+    -w '%{http_code}' \
+    "$url" 2>/dev/null)
 
-(PyTorch-2.1.0) [ma-user huawei-ts-tsfm-main]$conda create -n py3.10 python=3.10
-Collecting package metadata (current_repodata.json): failed
-
-CondaHTTPError: HTTP 000 CONNECTION FAILED for url <https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/linux-64/current_repodata.json>
-Elapsed: -
-
-An HTTP error occurred when trying to retrieve this URL.
-HTTP errors are often intermittent, and a simple retry will get you on your way.
-'https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/linux-64'
-
-
-(PyTorch-2.1.0) [ma-user huawei-ts-tsfm-main]$python -m pip config debug
-env_var:
-  PIP_INDEX_URL='http://repo.myhuaweicloud.com/repository/pypi/simple/'
-  PIP_TIMEOUT='120'
-  PIP_TRUSTED_HOST='repo.myhuaweicloud.com'
-env:
-global:
-  /etc/xdg/pip/pip.conf, exists: False
-  /etc/pip.conf, exists: False
-site:
-  /home/ma-user/anaconda3/envs/PyTorch-2.1.0/pip.conf, exists: False
-user:
-  /home/ma-user/.pip/pip.conf, exists: True
-    global.index-url: http://repo.myhuaweicloud.com/repository/pypi/simple/
-    global.trusted-host: repo.myhuaweicloud.com
-    global.timeout: 120
-  /home/ma-user/.config/pip/pip.conf, exists: False
-(PyTorch-2.1.0) [ma-user huawei-ts-tsfm-main]$
+  case "$code" in
+    200|206) echo "[可下载] HTTP $code  $channel" ;;
+    401|403) echo "[可连接但需要权限] HTTP $code  $channel" ;;
+    404)     echo "[路径不存在] HTTP $code  $channel" ;;
+    000)     echo "[无法连接] HTTP $code  $channel" ;;
+    *)       echo "[需要检查] HTTP $code  $channel" ;;
+  esac
+done
+[路径不存在] HTTP 404  http://repo.myhuaweicloud.com/repository/anaconda/pkgs/main
+[无法连接] HTTP 000  https://repo.myhuaweicloud.com/repository/anaconda/pkgs/main
+[无法连接] HTTP 000  http://repo.huaweicloud.com/repository/anaconda/pkgs/main
+[无法连接] HTTP 000  https://repo.huaweicloud.com/repository/anaconda/pkgs/main
+[无法连接] HTTP 000  http://mirrors.huaweicloud.com/repository/anaconda/pkgs/main
+[无法连接] HTTP 000  https://mirrors.huaweicloud.com/repository/anaconda/pkgs/main
