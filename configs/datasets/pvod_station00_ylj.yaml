@@ -1,25 +1,25 @@
 dataset: YLJParquet
 paths:
-  parquet_file: /opt/data/private/data/PVOD/station00_ylj.parquet
-  results_root: ./results_pvod_station00
+  parquet_file: /data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/YLJ-Unified_format.parquet
+  results_root: ./results_ylj
 fields:
   timestamp: timestamp
   target: observe_power
 time:
   sampling_interval_minutes: 15
   forecast_step_minutes: 15
-  train_start_timestamp: '2018-08-15 16:00:00'
-  test_start_timestamp: '2019-04-01 00:00:00'
-  test_end_exclusive_timestamp: '2019-06-13 16:00:00'
+  train_start_timestamp: '2024-01-01 00:00:00'
+  test_start_timestamp: '2025-01-01 00:00:00'
+  test_end_exclusive_timestamp: '2025-06-01 00:00:00'
   validation_fraction: 0.15
 power:
-  power_scale: 6.6
-  rated_power: 6.6
+  power_scale: 468.0
+  rated_power: 468.0
   units: MW
   target_floor: 0.0
 site:
-  latitude: 38.04778
-  longitude: 114.95139
+  latitude: 29.919
+  longitude: 100.641
   timezone: Asia/Shanghai
-  surface_tilt: 33
+  surface_tilt: 29.919
   surface_azimuth: 180
