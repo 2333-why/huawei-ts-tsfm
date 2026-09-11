@@ -63,6 +63,60 @@ TiRex zero-shot 模式：
 pip 安装仍继承服务器当前配置的华为 pip 源。如果服务器管理员提供的 Conda 仓库地址
 不同，只需替换 `HUAWEI_CONDA_CHANNEL` 的值。
 
+先查看当前 Conda 配置和相关环境变量：
+
+```bash
+conda config --show-sources
+conda config --show channels
+conda config --show default_channels
+conda config --show custom_channels
+conda config --show channel_alias
+
+env | grep -Ei 'conda|pip|proxy|repo|mirror'
+```
+
+扫描华为网络中可能存在的 Conda 仓库。该命令只测试地址，不会修改 Conda 配置：
+
+```bash
+for channel in \
+  "http://repo.myhuaweicloud.com/repository/anaconda/pkgs/main" \
+  "https://repo.myhuaweicloud.com/repository/anaconda/pkgs/main" \
+  "http://repo.huaweicloud.com/repository/anaconda/pkgs/main" \
+  "https://repo.huaweicloud.com/repository/anaconda/pkgs/main" \
+  "http://mirrors.huaweicloud.com/repository/anaconda/pkgs/main" \
+  "https://mirrors.huaweicloud.com/repository/anaconda/pkgs/main"
+do
+  url="${channel}/linux-64/current_repodata.json"
+  code=$(curl -L -sS \
+    --connect-timeout 5 \
+    --max-time 20 \
+    --range 0-0 \
+    -o /dev/null \
+    -w '%{http_code}' \
+    "$url" 2>/dev/null)
+
+  case "$code" in
+    200|206) echo "[可下载] HTTP $code  $channel" ;;
+    401|403) echo "[可连接但需要权限] HTTP $code  $channel" ;;
+    404)     echo "[路径不存在] HTTP $code  $channel" ;;
+    000)     echo "[无法连接] HTTP $code  $channel" ;;
+    *)       echo "[需要检查] HTTP $code  $channel" ;;
+  esac
+done
+```
+
+把扫描结果中标记为“可下载”的地址填入下面变量，再确认该源确实包含 Python 3.10：
+
+```bash
+export HUAWEI_CONDA_CHANNEL="http://repo.myhuaweicloud.com/repository/anaconda/pkgs/main"
+
+conda search 'python=3.10' \
+  --override-channels \
+  -c "$HUAWEI_CONDA_CHANNEL"
+```
+
+查询成功后，再创建环境并继续安装：
+
 ```bash
 cd /你的实际路径/huawei-ts-tsfm
 
