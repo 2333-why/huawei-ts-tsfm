@@ -181,7 +181,7 @@ python scripts/download_foundation_weights.py
 已经下载完成的缓存；输入 Token 时不会在终端回显，也不会把 Token 写入仓库：
 
 ```bash
-cd /你的实际路径/huawei-ts-tsfm
+cd /home/ma-user/work/why/huawei-ts-tsfm-main
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate py3_10
 
@@ -212,7 +212,7 @@ unset HF_TOKEN
 如果关闭 Xet 后 Sundial 仍因已有临时分片而失败，只清理该模型未完成的分片，再重新下载：
 
 ```bash
-cd /你的实际路径/huawei-ts-tsfm
+cd /home/ma-user/work/why/huawei-ts-tsfm-main
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate py3_10
 
@@ -225,11 +225,23 @@ read -rsp '请输入 Hugging Face 只读 Token: ' HF_TOKEN
 echo
 export HF_TOKEN
 
+python - <<'PY'
+from huggingface_hub import whoami
+info = whoami()
+print("Hugging Face authenticated as:", info.get("name", "unknown"))
+PY
+
 SUNDIAL_CACHE="$HF_HOME/hub/models--thuml--sundial-base-128m"
-find "$SUNDIAL_CACHE" -type f -name '*.incomplete' -print -delete
+find "$SUNDIAL_CACHE" \
+  -type f \
+  -name '*.incomplete' \
+  -print \
+  -delete
 
 python scripts/download_foundation_weights.py --model Sundial
+
 python scripts/download_foundation_weights.py
+
 python scripts/check_foundation_environment.py --offline --json
 
 unset HF_TOKEN
