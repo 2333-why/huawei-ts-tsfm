@@ -308,6 +308,20 @@ revision、生成完整的 `checkpoints_huggingface` 缓存、打包为 `tar.gz`
 不要直接拖拽未打包的缓存目录，因为 Hugging Face 缓存可能包含符号链接，而对象存储挂载
 可能破坏链接关系。
 
+如果另一台电脑没有 Git，在 PowerShell 中直接下载并运行独立脚本：
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/2333-why/huawei-ts-tsfm/main/scripts/download_weights_without_git.ps1" `
+  -OutFile "download_weights_without_git.ps1"
+
+powershell -ExecutionPolicy Bypass -File ".\download_weights_without_git.ps1"
+```
+
+该脚本不依赖本仓库的其他文件。它会创建 `huawei-ts-tsfm-weights` 目录和独立 Python
+环境，安全提示输入 Hugging Face 只读 Token，下载五个固定 revision，并自动生成缓存
+归档及 SHA256 文件。下载中断后重新运行同一命令即可继续。
+
 在另一台 Windows 电脑的 PowerShell 中执行；仓库可以克隆到任意路径：
 
 ```powershell
