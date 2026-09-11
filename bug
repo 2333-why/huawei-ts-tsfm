@@ -1,4 +1,10 @@
-(py3_10) [ma-user huawei-ts-tsfm-main]$
+(py3_10) [ma-user huawei-ts-tsfm-main]$export http_proxy=http://wWX1544079:why-0224@10.155.192.138:8080/
+export https_proxy=http://wWX1544079:why-0224@10.155.192.138:8080/
+export no_proxy=127.0.0.1,localhost,10.155.97.247,.myhuaweicloud.com
+(py3_10) [ma-user huawei-ts-tsfm-main]$cd /home/ma-user/work/why/huawei-ts-tsfm-main
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate py3_10
+
 export HF_HOME="$PWD/checkpoints_huggingface"
 export HF_HUB_DISABLE_XET=1
 export HF_HUB_DOWNLOAD_TIMEOUT=600
@@ -8,15 +14,28 @@ read -rsp '请输入 Hugging Face 只读 Token: ' HF_TOKEN
 echo
 export HF_TOKEN
 
+python - <<'PY'
+from huggingface_hub import whoami
+info = whoami()
+print("Hugging Face authenticated as:", info.get("name", "unknown"))
+PY
+
 SUNDIAL_CACHE="$HF_HOME/hub/models--thuml--sundial-base-128m"
-find "$SUNDIAL_CACHE" -type f -name '*.incomplete' -print -delete
+find "$SUNDIAL_CACHE" \
+  -type f \
+  -name '*.incomplete' \
+  -print \
+  -delete
 
 python scripts/download_foundation_weights.py --model Sundial
+
 python scripts/download_foundation_weights.py
+
 python scripts/check_foundation_environment.py --offline --json
 
-unset HF_TOKEN\
+unset HF_TOKEN
 请输入 Hugging Face 只读 Token: 
+Hugging Face authenticated as: weihanyu
 HF_HOME=/home/ma-user/work/why/huawei-ts-tsfm-main/checkpoints_huggingface
 Downloading Sundial: thuml/sundial-base-128m@3212e42564493f520593e5414af4367fc4b49226
 Downloading bytes:                                                                                                                                                          |  0.00B            Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)iles:   0%|                                                                                                                                                   | 0/9 [00:00<?, ?it/s]
@@ -149,7 +168,7 @@ Error while downloading from https://huggingface.co/thuml/sundial-base-128m/reso
 Trying to resume download...
 Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
 Max retries exceeded.
-Fetching 9 files:  89%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌               | 8/9 [00:08<00:01,  1.10s/it]
+Fetching 9 files:  89%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌               | 8/9 [00:08<00:01,  1.08s/it]
 Traceback (most recent call last):
   File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
     yield
@@ -458,4 +477,4 @@ Downloading bytes:                                                              
   ],
   "schema_version": "foundation-environment-v1"
 }
-> ^C
+(py3_10) [ma-user huawei-ts-tsfm-main]$
