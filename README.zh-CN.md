@@ -56,6 +56,48 @@ TiRex zero-shot 模式：
 所有实验脚本默认直接使用当前 shell 中的 `python`；只有确实需要指定其他解释器时，
 才设置 `PYTHON=/path/to/python`。
 
+### 当前 Python 低于 3.10 时的终端命令
+
+以下命令由用户在华为服务器终端中手动执行。`--override-channels` 会绕过 `.condarc`
+中失效的清华 Conda 源；后续 pip 安装仍继承服务器当前配置的华为 pip 源。
+
+```bash
+cd /你的实际路径/huawei-ts-tsfm
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+
+conda create -n huawei-ts-tsfm-py310 \
+  python=3.10 pip -y \
+  --override-channels \
+  -c https://repo.anaconda.com/pkgs/main
+
+conda activate huawei-ts-tsfm-py310
+
+python --version
+python -m pip config list
+
+git pull origin main
+
+bash scripts/setup_foundation_runtime.sh
+
+HF_HOME="$PWD/checkpoints_huggingface" \
+python scripts/check_foundation_environment.py --offline --json
+```
+
+环境检查成功后，启动完整的八卡训练和测试：
+
+```bash
+cd /你的实际路径/huawei-ts-tsfm
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate huawei-ts-tsfm-py310
+
+GPUS='0 1 2 3 4 5 6 7' \
+SMOKE=0 \
+RESUME=1 \
+OUTPUT_ROOT=results_foundation_models \
+bash scripts/run_all_foundation_models_8gpu.sh
+```
+
 ## 安装依赖并下载权重
 
 以下命令直接安装到当前已激活环境，不会创建或切换虚拟环境。它随后按照
