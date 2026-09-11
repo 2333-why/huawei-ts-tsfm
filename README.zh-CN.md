@@ -300,6 +300,137 @@ python scripts/check_foundation_environment.py --offline --json
 unset HF_TOKEN
 ```
 
+### 在本地下载权重并通过挂载桶导入服务器
+
+如果华为服务器无法直接下载 Hugging Face 大文件，建议在本地 Windows 下载完整的
+`checkpoints_huggingface` 缓存并打成 `tar.gz`，再通过挂载桶上传。不要直接拖拽未打包的
+缓存目录，因为 Hugging Face 缓存可能包含符号链接，而对象存储挂载可能破坏链接关系。
+
+在本地 Windows PowerShell 中下载五个固定 revision 的模型：
+
+```powershell
+Set-Location "F:\多模态时序大模型\华为深圳测试\huawei-ts-tsfm"
+
+git pull origin main
+
+py -3 -m venv .venv-hf-download
+
+$Python = Join-Path $PWD ".venv-hf-download\Scripts\python.exe"
+
+& $Python -m pip install --upgrade pip huggingface_hub
+
+$env:HF_HOME = Join-Path $PWD "checkpoints_huggingface"
+$env:HF_HUB_DISABLE_XET = "1"
+$env:HF_HUB_DOWNLOAD_TIMEOUT = "600"
+$env:HF_HUB_ETAG_TIMEOUT = "60"
+
+$SecureToken = Read-Host "请输入 Hugging Face 只读 Token" -AsSecureString
+$env:HF_TOKEN = [System.Net.NetworkCredential]::new("", $SecureToken).Password
+
+& $Python scripts\download_foundation_weights.py
+
+Remove-Item Env:HF_TOKEN
+$SecureToken = $null
+```
+
+下载命令成功结束后，在本地 PowerShell 中打包缓存并生成 SHA256 校验文件：
+
+```powershell
+Set-Location "F:\多模态时序大模型\华为深圳测试\huawei-ts-tsfm"
+
+$Archive = Join-Path $PWD "huawei-ts-tsfm-hf-cache.tar.gz"
+$Checksum = "$Archive.sha256"
+
+tar.exe -czf $Archive -C $PWD.Path checkpoints_huggingface
+
+$Hash = Get-FileHash -Algorithm SHA256 $Archive
+$ArchiveName = Split-Path $Archive -Leaf
+
+"$($Hash.Hash.ToLower())  $ArchiveName" |
+    Set-Content -Encoding ascii $Checksum
+
+Get-Item $Archive, $Checksum |
+    Select-Object FullName, Length
+
+tar.exe -tzf $Archive |
+    Select-Object -First 20
+```
+
+将下面两个文件上传到挂载桶目录 `/data/PVMMoE/why`：
+
+```text
+huawei-ts-tsfm-hf-cache.tar.gz
+huawei-ts-tsfm-hf-cache.tar.gz.sha256
+```
+
+文件在服务器上的预期位置为：
+
+```text
+/data/PVMMoE/why/huawei-ts-tsfm-hf-cache.tar.gz
+/data/PVMMoE/why/huawei-ts-tsfm-hf-cache.tar.gz.sha256
+```
+
+上传完成后，先在华为服务器校验归档：
+
+```bash
+cd /data/PVMMoE/why
+
+sha256sum -c huawei-ts-tsfm-hf-cache.tar.gz.sha256
+```
+
+校验结果必须为 `huawei-ts-tsfm-hf-cache.tar.gz: OK`。然后直接将缓存解压到项目实际使用的
+位置：
+
+```bash
+PROJECT_ROOT="/home/ma-user/work/why/huawei-ts-tsfm-main"
+ARCHIVE="/data/PVMMoE/why/huawei-ts-tsfm-hf-cache.tar.gz"
+
+mkdir -p "$PROJECT_ROOT"
+
+tar --no-same-owner \
+  -xzf "$ARCHIVE" \
+  -C "$PROJECT_ROOT"
+
+export HF_HOME="$PROJECT_ROOT/checkpoints_huggingface"
+```
+
+只清理服务器此前下载失败遗留的临时分片，并检查归档中的符号链接是否完整：
+
+```bash
+find "$HF_HOME" \
+  -type f \
+  -name '*.incomplete' \
+  -print \
+  -delete
+
+BROKEN_LINK=$(find "$HF_HOME" -xtype l -print -quit)
+
+if [ -n "$BROKEN_LINK" ]; then
+  echo "发现损坏链接：$BROKEN_LINK"
+  exit 1
+else
+  echo "Hugging Face 缓存链接检查通过"
+fi
+```
+
+最后在完全离线模式下验证环境、数据集和五个模型权重：
+
+```bash
+cd /home/ma-user/work/why/huawei-ts-tsfm-main
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate py3_10
+
+export HF_HOME="$PWD/checkpoints_huggingface"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+python scripts/check_foundation_environment.py --offline --json
+```
+
+五个模型的 `status` 都应为 `pass`，不能再出现 `download_required`。程序最终使用的权重
+目录为 `/home/ma-user/work/why/huawei-ts-tsfm-main/checkpoints_huggingface`。
+
 如服务器需要使用其他共享缓存，可在安装、下载和实验命令前统一设置
 `HF_HOME=/path/to/huggingface-cache`。下载完成后可离线检查：
 
