@@ -8,22 +8,19 @@ $WorkDir = [System.IO.Path]::GetFullPath($WorkDir)
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 Set-Location $WorkDir
 
-$VenvDir = Join-Path $WorkDir ".venv-download"
-$Python = Join-Path $VenvDir "Scripts\python.exe"
+$PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+if (-not $PythonCommand) {
+    throw "Python is required. Activate the environment that should run the download, then retry."
+}
+$Python = $PythonCommand.Source
 
-if (-not (Test-Path -LiteralPath $Python)) {
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        & py -3 -m venv $VenvDir
-    }
-    elseif (Get-Command python -ErrorAction SilentlyContinue) {
-        & python -m venv $VenvDir
-    }
-    else {
-        throw "Python 3 is required but neither 'py' nor 'python' was found."
-    }
+& $Python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)"
+if ($LASTEXITCODE -ne 0) {
+    throw "Python 3.9 or newer is required. Activate a compatible environment, then retry."
 }
 
-& $Python -m pip install --upgrade pip huggingface_hub
+Write-Host "Using active Python: $Python"
+& $Python -m pip install --upgrade huggingface_hub
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install huggingface_hub."
 }

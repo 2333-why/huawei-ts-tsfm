@@ -318,9 +318,10 @@ Invoke-WebRequest `
 powershell -ExecutionPolicy Bypass -File ".\download_weights_without_git.ps1"
 ```
 
-该脚本不依赖本仓库的其他文件。它会创建 `huawei-ts-tsfm-weights` 目录和独立 Python
-环境，安全提示输入 Hugging Face 只读 Token，下载五个固定 revision，并自动生成缓存
-归档及 SHA256 文件。下载中断后重新运行同一命令即可继续。
+该脚本不依赖本仓库的其他文件，也不会创建或激活 Python 环境。请先激活需要使用的
+Python 3.9+ 环境；脚本会直接使用当前终端中的 `python`，安装/更新 `huggingface_hub`，
+创建 `huawei-ts-tsfm-weights` 目录，安全提示输入 Hugging Face 只读 Token，下载五个固定
+revision，并自动生成缓存归档及 SHA256 文件。下载中断后重新运行同一命令即可继续。
 
 在另一台 Windows 电脑的 PowerShell 中执行；仓库可以克隆到任意路径：
 
