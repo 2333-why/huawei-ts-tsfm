@@ -158,6 +158,59 @@ bash scripts/run_all_foundation_models_8gpu.sh
 
 ## 安装依赖并下载权重
 
+### 修复 CUDA 13 PyTorch 与 CUDA 12.2 驱动不兼容
+
+如果检查结果显示已安装的 PyTorch 使用 CUDA 13，而服务器驱动只支持 CUDA 12.2，请在
+`py3_10` 环境中改装 `torch==2.4.1`。该版本使用 CUDA 12.1 构建，可以在支持 CUDA 12.2
+的驱动上运行。以下命令显式使用华为内部 pip 源，不访问公共 PyPI：
+
+```bash
+cd /home/ma-user/work/why/huawei-ts-tsfm-main
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate py3_10
+
+export PIP_INDEX_URL="http://repo.myhuaweicloud.com/repository/pypi/simple/"
+export PIP_TRUSTED_HOST="repo.myhuaweicloud.com"
+export PIP_TIMEOUT=600
+
+python -m pip config list
+python -m pip index versions torch
+
+python -m pip uninstall -y torch triton
+
+python -m pip freeze \
+  | awk -F'==' 'tolower($1) ~ /^nvidia-/ {print $1}' \
+  | xargs -r python -m pip uninstall -y
+
+python -m pip install --no-cache-dir --force-reinstall "torch==2.4.1"
+
+python - <<'PY'
+import sys
+import torch
+
+print("python:", sys.version)
+print("torch:", torch.__version__)
+print("torch CUDA build:", torch.version.cuda)
+print("CUDA available:", torch.cuda.is_available())
+print("GPU count:", torch.cuda.device_count())
+
+if torch.version.cuda != "12.1":
+    raise SystemExit(f"expected a CUDA 12.1 PyTorch build, got {torch.version.cuda!r}")
+if not torch.cuda.is_available():
+    raise SystemExit("PyTorch still cannot initialize CUDA")
+if torch.cuda.device_count() != 8:
+    raise SystemExit(f"expected 8 GPUs, found {torch.cuda.device_count()}")
+
+for index in range(torch.cuda.device_count()):
+    print(f"GPU {index}: {torch.cuda.get_device_name(index)}")
+PY
+
+python scripts/check_foundation_environment.py --offline --json
+```
+
+仓库已将现代环境的 PyTorch 固定为 `torch==2.4.1`，因此以后重新运行
+`scripts/setup_foundation_runtime.sh` 时不会再次升级到 CUDA 13 版本。
+
 以下命令直接安装到当前已激活环境，不会创建或切换虚拟环境。它随后按照
 `models/registry.py` 中的固定 revision 下载 Sundial、TimeMoE、Chronos2、TiRex 和
 TimesFM 权重：
