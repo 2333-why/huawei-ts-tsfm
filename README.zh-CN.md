@@ -302,16 +302,17 @@ unset HF_TOKEN
 
 ### 在本地下载权重并通过挂载桶导入服务器
 
-如果华为服务器无法直接下载 Hugging Face 大文件，建议在本地 Windows 下载完整的
-`checkpoints_huggingface` 缓存并打成 `tar.gz`，再通过挂载桶上传。不要直接拖拽未打包的
-缓存目录，因为 Hugging Face 缓存可能包含符号链接，而对象存储挂载可能破坏链接关系。
+如果华为服务器无法直接下载 Hugging Face 大文件，可以在任意另一台能访问 Hugging Face
+的 Windows 电脑上克隆本仓库，然后运行仓库自带的跨机器打包程序。它会下载五个固定
+revision、生成完整的 `checkpoints_huggingface` 缓存、打包为 `tar.gz` 并生成 SHA256。
+不要直接拖拽未打包的缓存目录，因为 Hugging Face 缓存可能包含符号链接，而对象存储挂载
+可能破坏链接关系。
 
-在本地 Windows PowerShell 中下载五个固定 revision 的模型：
+在另一台 Windows 电脑的 PowerShell 中执行；仓库可以克隆到任意路径：
 
 ```powershell
-Set-Location "F:\多模态时序大模型\华为深圳测试\huawei-ts-tsfm"
-
-git pull origin main
+git clone https://github.com/2333-why/huawei-ts-tsfm.git
+Set-Location huawei-ts-tsfm
 
 py -3 -m venv .venv-hf-download
 
@@ -319,41 +320,15 @@ $Python = Join-Path $PWD ".venv-hf-download\Scripts\python.exe"
 
 & $Python -m pip install --upgrade pip huggingface_hub
 
-$env:HF_HOME = Join-Path $PWD "checkpoints_huggingface"
-$env:HF_HUB_DISABLE_XET = "1"
-$env:HF_HUB_DOWNLOAD_TIMEOUT = "600"
-$env:HF_HUB_ETAG_TIMEOUT = "60"
-
-$SecureToken = Read-Host "请输入 Hugging Face 只读 Token" -AsSecureString
-$env:HF_TOKEN = [System.Net.NetworkCredential]::new("", $SecureToken).Password
-
-& $Python scripts\download_foundation_weights.py
-
-Remove-Item Env:HF_TOKEN
-$SecureToken = $null
+& $Python scripts\build_offline_weight_bundle.py
 ```
 
-下载命令成功结束后，在本地 PowerShell 中打包缓存并生成 SHA256 校验文件：
+程序会安全提示输入 Hugging Face 只读 Token，输入内容不会回显，也不会写入仓库。下载中断时
+直接重新执行最后一条命令即可复用缓存并断点续传。成功后仓库根目录会生成：
 
-```powershell
-Set-Location "F:\多模态时序大模型\华为深圳测试\huawei-ts-tsfm"
-
-$Archive = Join-Path $PWD "huawei-ts-tsfm-hf-cache.tar.gz"
-$Checksum = "$Archive.sha256"
-
-tar.exe -czf $Archive -C $PWD.Path checkpoints_huggingface
-
-$Hash = Get-FileHash -Algorithm SHA256 $Archive
-$ArchiveName = Split-Path $Archive -Leaf
-
-"$($Hash.Hash.ToLower())  $ArchiveName" |
-    Set-Content -Encoding ascii $Checksum
-
-Get-Item $Archive, $Checksum |
-    Select-Object FullName, Length
-
-tar.exe -tzf $Archive |
-    Select-Object -First 20
+```text
+huawei-ts-tsfm-hf-cache.tar.gz
+huawei-ts-tsfm-hf-cache.tar.gz.sha256
 ```
 
 将下面两个文件上传到挂载桶目录 `/data/PVMMoE/why`：
