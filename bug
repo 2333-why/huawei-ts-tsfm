@@ -1,12 +1,60 @@
-ccessfully installed MarkupSafe-3.0.3 PyYAML-6.0.3 accelerate-1.15.0 annotated-doc-0.0.5 anyio-4.15.1 certifi-2026.7.22 chronos-forecasting-2.3.2 click-8.5.0 cloudpickle-3.1.2 cuda-bindings-13.4.1 cuda-pathfinder-1.8.1 cuda-toolkit-13.0.3.0 einops-0.8.2 exceptiongroup-1.3.1 filelock-3.32.6 fsspec-2026.7.0 h11-0.16.0 hf-xet-1.6.0 httpcore-1.0.9 httpx-0.28.1 huggingface-hub-1.31.0 idna-3.19 jinja2-3.1.6 joblib-1.6.0 markdown-it-py-4.2.0 mdurl-0.1.2 mpmath-1.3.0 networkx-3.4.2 numpy-1.26.4 nvidia-cublas-13.1.1.3 nvidia-cuda-cupti-13.0.85 nvidia-cuda-nvrtc-13.0.88 nvidia-cuda-runtime-13.0.96 nvidia-cudnn-cu13-9.24.0.43 nvidia-cufft-12.0.0.61 nvidia-cufile-1.15.1.6 nvidia-curand-10.4.0.35 nvidia-cusolver-12.0.4.66 nvidia-cusparse-12.6.3.3 nvidia-cusparselt-cu13-0.8.1 nvidia-nccl-cu13-2.30.7 nvidia-nvjitlink-13.4.52 nvidia-nvshmem-cu13-3.4.5 nvidia-nvtx-13.0.85 pandas-2.3.3 peft-0.20.0 psutil-7.2.2 pyarrow-25.0.1 pygments-2.21.0 python-dateutil-2.9.0.post0 pytz-2026.3.post1 regex-2026.9.10 rich-15.0.0 safetensors-0.8.0 scikit-learn-1.7.2 scipy-1.15.3 shellingham-1.5.4 six-1.17.0 sympy-1.14.0 threadpoolctl-3.6.0 tirex-ts-1.4.2 tokenizers-0.23.2 torch-2.14.0 tqdm-4.70.0 transformers-5.17.0 triton-3.8.0 typer-0.27.2 typing-extensions-4.16.0 tzdata-2026.3
-Downloading pinned checkpoints into HF_HOME=/home/ma-user/work/why/huawei-ts-tsfm-main/checkpoints_huggingface
+(py3_10) [ma-user huawei-ts-tsfm-main]$
+export HF_HOME="$PWD/checkpoints_huggingface"
+export HF_HUB_DISABLE_XET=1
+export HF_HUB_DOWNLOAD_TIMEOUT=600
+export HF_HUB_ETAG_TIMEOUT=60
+
+read -rsp '请输入 Hugging Face 只读 Token: ' HF_TOKEN
+echo
+export HF_TOKEN
+
+SUNDIAL_CACHE="$HF_HOME/hub/models--thuml--sundial-base-128m"
+find "$SUNDIAL_CACHE" -type f -name '*.incomplete' -print -delete
+
+python scripts/download_foundation_weights.py --model Sundial
+python scripts/download_foundation_weights.py
+python scripts/check_foundation_environment.py --offline --json
+
+unset HF_TOKEN\
+请输入 Hugging Face 只读 Token: 
 HF_HOME=/home/ma-user/work/why/huawei-ts-tsfm-main/checkpoints_huggingface
 Downloading Sundial: thuml/sundial-base-128m@3212e42564493f520593e5414af4367fc4b49226
-Downloading bytes:                                                                                                                                                          |  0.00B            Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.                           |  0.00B /  0.00B            
-Downloading bytes:                                                                                                                                                          | 56.5kB            ^[[B^[[Bructing (incomplete total...):   0%|                                                                                                                        | 56.5kB /  513MB            
-Fetching 9 files:  78%|████████████████████████████████████████████████████████████████████████████████████████████████████████████                               | 7/9 [00:01<00:00,  6.97it/s]
+Downloading bytes:                                                                                                                                                          |  0.00B            Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)iles:   0%|                                                                                                                                                   | 0/9 [00:00<?, ?it/s]
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Max retries exceeded.
+Fetching 9 files:  89%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌               | 8/9 [00:08<00:01,  1.09s/it]
+Traceback (most recent call last):
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_sync/http_proxy.py", line 316, in handle_request
+    stream = stream.start_tls(**kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 376, in start_tls
+    return self._stream.start_tls(ssl_context, server_hostname, timeout)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 154, in start_tls
+    with map_exceptions(exc_map):
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ConnectError: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
 
-Fetching 9 files:  89%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌               | 8/9 [03:36<00:27, 27.12s/it]
+The above exception was the direct cause of the following exception:
+
 Traceback (most recent call last):
   File "/home/ma-user/work/why/huawei-ts-tsfm-main/scripts/download_foundation_weights.py", line 71, in <module>
     raise SystemExit(main())
@@ -32,8 +80,382 @@ Traceback (most recent call last):
     return _hf_hub_download_to_cache_dir(
   File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1257, in _hf_hub_download_to_cache_dir
     _download_to_tmp_and_move(
-  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1980, in _download_to_tmp_and_move
-    xet_get(
-  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 578, in xet_get
-    with session.new_file_download_group(
-RuntimeError: Task error: File reconstruction error: CAS Client Error: Request middleware error: error sending request for url (https://cas-server.xethub.hf.co/v2/reconstructions/345b12c2cf774fdf68018dc92fe41211ecd0e915d38104cd49b1b770bd4fa23c)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1996, in _download_to_tmp_and_move
+    http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 384, in http_get
+    response = stack.enter_context(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 492, in enter_context
+    result = _cm_type.__enter__(cm)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 135, in __enter__
+    return next(self.gen)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_http.py", line 681, in http_stream_backoff
+    yield from _http_backoff_base(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_http.py", line 502, in _http_backoff_base
+    with client.stream(method=method, url=url, **kwargs) as response:
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 135, in __enter__
+    return next(self.gen)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 868, in stream
+    response = self.send(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ConnectError: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Reconstructing (incomplete total...): |                                                                                                                            |  0.00B /  0.00B            
+Downloading bytes:                                                                                                                                                          |  0.00B            
+HF_HOME=/home/ma-user/work/why/huawei-ts-tsfm-main/checkpoints_huggingface
+Downloading Sundial: thuml/sundial-base-128m@3212e42564493f520593e5414af4367fc4b49226
+Downloading bytes:                                                                                                                                                          |  0.00B            Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)iles:   0%|                                                                                                                                                   | 0/9 [00:00<?, ?it/s]
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Trying to resume download...
+Error while downloading from https://huggingface.co/thuml/sundial-base-128m/resolve/3212e42564493f520593e5414af4367fc4b49226/model.safetensors: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Max retries exceeded.
+Fetching 9 files:  89%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌               | 8/9 [00:08<00:01,  1.10s/it]
+Traceback (most recent call last):
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_sync/http_proxy.py", line 316, in handle_request
+    stream = stream.start_tls(**kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 376, in start_tls
+    return self._stream.start_tls(ssl_context, server_hostname, timeout)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 154, in start_tls
+    with map_exceptions(exc_map):
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ConnectError: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/ma-user/work/why/huawei-ts-tsfm-main/scripts/download_foundation_weights.py", line 71, in <module>
+    raise SystemExit(main())
+  File "/home/ma-user/work/why/huawei-ts-tsfm-main/scripts/download_foundation_weights.py", line 60, in main
+    snapshot_path = snapshot_download(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/_snapshot_download.py", line 529, in snapshot_download
+    hf_thread_map(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/tqdm.py", line 441, in hf_thread_map
+    results[future_to_index[future]] = future.result()
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/concurrent/futures/_base.py", line 451, in result
+    return self.__get_result()
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/concurrent/futures/_base.py", line 403, in __get_result
+    raise self._exception
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/_snapshot_download.py", line 509, in _inner_hf_hub_download
+    hf_hub_download(  # type: ignore
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1035, in hf_hub_download
+    return _hf_hub_download_to_cache_dir(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1257, in _hf_hub_download_to_cache_dir
+    _download_to_tmp_and_move(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1996, in _download_to_tmp_and_move
+    http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 466, in http_get
+    return http_get(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 384, in http_get
+    response = stack.enter_context(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 492, in enter_context
+    result = _cm_type.__enter__(cm)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 135, in __enter__
+    return next(self.gen)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_http.py", line 681, in http_stream_backoff
+    yield from _http_backoff_base(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/huggingface_hub/utils/_http.py", line 502, in _http_backoff_base
+    with client.stream(method=method, url=url, **kwargs) as response:
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 135, in __enter__
+    return next(self.gen)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 868, in stream
+    response = self.send(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ConnectError: [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1017)
+Reconstructing (incomplete total...): |                                                                                                                            |  0.00B /  0.00B            
+Downloading bytes:                                                                                                                                                          |  0.00B            
+/home/ma-user/anaconda3/envs/py3_10/lib/python3.10/site-packages/torch/cuda/__init__.py:228: UserWarning: CUDA initialization: The NVIDIA driver on your system is too old (found version 12020). Please update your GPU driver by downloading and installing a new version from the URL: http://www.nvidia.com/Download/index.aspx Alternatively, go to: https://pytorch.org to install a PyTorch version that has been compiled with your version of the CUDA driver. (Triggered internally at /__w/pytorch/pytorch/c10/cuda/CUDAFunctions.cpp:119.)
+  return torch._C._cuda_getDeviceCount() > 0
+{
+  "cache_root": {
+    "path": "/home/ma-user/work/why/huawei-ts-tsfm-main/checkpoints_huggingface/hub",
+    "status": "pass"
+  },
+  "cuda": {
+    "available": false,
+    "device_count": 0,
+    "devices": [],
+    "status": "fail"
+  },
+  "datasets": [
+    {
+      "config_path": "/home/ma-user/work/why/huawei-ts-tsfm-main/configs/datasets/skippd_luoyang.json",
+      "name": "skippd_luoyang",
+      "path": "/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/Luoyang-Unified_format-V1.parquet",
+      "size_bytes": 15694456,
+      "source": "config",
+      "status": "pass"
+    },
+    {
+      "config_path": "/home/ma-user/work/why/huawei-ts-tsfm-main/configs/datasets/pvod_station00_ylj.yaml",
+      "name": "pvod_station00_ylj",
+      "path": "/data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/YLJ-Unified_format.parquet",
+      "size_bytes": 1362214,
+      "source": "config",
+      "status": "pass"
+    }
+  ],
+  "interpreter": {
+    "executable": "/home/ma-user/anaconda3/envs/py3_10/bin/python",
+    "expected_executable": "any Python >=3.10 executable",
+    "expected_python": ">=3.10",
+    "python": "3.10.21",
+    "status": "pass"
+  },
+  "models": [
+    {
+      "block_reason": null,
+      "cache_complete": false,
+      "download_required": true,
+      "missing_files": [
+        "model.safetensors"
+      ],
+      "model_id": "thuml/sundial-base-128m",
+      "name": "Sundial",
+      "network_attempted": false,
+      "network_status": "offline",
+      "package": "-",
+      "package_status": "pass",
+      "package_version": null,
+      "python_floor": "3.8",
+      "python_status": "pass",
+      "required_files": [
+        "config.json",
+        "generation_config.json",
+        "configuration_sundial.py",
+        "modeling_sundial.py",
+        "flow_loss.py",
+        "ts_generation_mixin.py",
+        "model.safetensors"
+      ],
+      "revision": "3212e42564493f520593e5414af4367fc4b49226",
+      "status": "download_required"
+    },
+    {
+      "block_reason": null,
+      "cache_complete": false,
+      "download_required": true,
+      "missing_files": [
+        "config.json",
+        "generation_config.json",
+        "configuration_time_moe.py",
+        "modeling_time_moe.py",
+        "ts_generation_mixin.py",
+        "model.safetensors"
+      ],
+      "model_id": "Maple728/TimeMoE-50M",
+      "name": "TimeMoE",
+      "network_attempted": false,
+      "network_status": "offline",
+      "package": "-",
+      "package_status": "pass",
+      "package_version": null,
+      "python_floor": "3.8",
+      "python_status": "pass",
+      "required_files": [
+        "config.json",
+        "generation_config.json",
+        "configuration_time_moe.py",
+        "modeling_time_moe.py",
+        "ts_generation_mixin.py",
+        "model.safetensors"
+      ],
+      "revision": "446753ee48ff3726d0606a81d0092d54acee995e",
+      "status": "download_required"
+    },
+    {
+      "block_reason": null,
+      "cache_complete": false,
+      "download_required": true,
+      "missing_files": [
+        "config.json",
+        "model.safetensors"
+      ],
+      "model_id": "amazon/chronos-2",
+      "name": "Chronos2",
+      "network_attempted": false,
+      "network_status": "offline",
+      "package": "chronos-forecasting",
+      "package_status": "pass",
+      "package_version": "2.3.2",
+      "python_floor": "3.10",
+      "python_status": "pass",
+      "required_files": [
+        "config.json",
+        "model.safetensors"
+      ],
+      "revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",
+      "status": "download_required"
+    },
+    {
+      "block_reason": null,
+      "cache_complete": false,
+      "download_required": true,
+      "missing_files": [
+        "model.ckpt"
+      ],
+      "model_id": "NX-AI/TiRex",
+      "name": "TiRex",
+      "network_attempted": false,
+      "network_status": "offline",
+      "package": "tirex-ts",
+      "package_status": "pass",
+      "package_version": "1.4.2",
+      "python_floor": "3.10",
+      "python_status": "pass",
+      "required_files": [
+        "model.ckpt"
+      ],
+      "revision": "63c740922493f5fbe60b277609ec62babfba2762",
+      "status": "download_required"
+    },
+    {
+      "block_reason": null,
+      "cache_complete": false,
+      "download_required": true,
+      "missing_files": [
+        "config.json",
+        "model.safetensors"
+      ],
+      "model_id": "google/timesfm-2.5-200m-transformers",
+      "name": "TimesFM",
+      "network_attempted": false,
+      "network_status": "offline",
+      "package": "transformers",
+      "package_status": "pass",
+      "package_version": "5.17.0",
+      "python_floor": "3.10",
+      "python_status": "pass",
+      "required_files": [
+        "config.json",
+        "model.safetensors"
+      ],
+      "revision": "5a9806b9b291fad9233b5249d88263f1846304d3",
+      "status": "download_required"
+    }
+  ],
+  "ok": false,
+  "packages": [
+    {
+      "cuda_build": "13.0",
+      "expected": ">=2.4,<3",
+      "import_status": "pass",
+      "metadata_status": "pass",
+      "name": "torch",
+      "status": "pass",
+      "version": "2.14.0",
+      "version_status": "pass"
+    },
+    {
+      "cuda_build": null,
+      "expected": ">=5.3,<6",
+      "import_status": "pass",
+      "metadata_status": "pass",
+      "name": "transformers",
+      "status": "pass",
+      "version": "5.17.0",
+      "version_status": "pass"
+    },
+    {
+      "cuda_build": null,
+      "expected": ">=0.18.1,<1",
+      "import_status": "pass",
+      "metadata_status": "pass",
+      "name": "peft",
+      "status": "pass",
+      "version": "0.20.0",
+      "version_status": "pass"
+    }
+  ],
+  "schema_version": "foundation-environment-v1"
+}
+> ^C
