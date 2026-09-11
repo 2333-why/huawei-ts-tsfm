@@ -173,6 +173,68 @@ bash scripts/setup_foundation_runtime.sh
 python scripts/download_foundation_weights.py
 ```
 
+### Xet/CAS 下载失败后使用 Token 续传
+
+如果日志包含 `cas-server.xethub.hf.co`、`File reconstruction error` 或
+`CAS Client Error`，说明失败发生在 Hugging Face Xet/CAS 文件传输阶段。Token 可以提高
+请求限额，但仍需禁用 Xet，才能绕过无法访问的 CAS 地址并改用普通 HTTP。以下命令会复用
+已经下载完成的缓存；输入 Token 时不会在终端回显，也不会把 Token 写入仓库：
+
+```bash
+cd /你的实际路径/huawei-ts-tsfm
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate py3_10
+
+export HF_HOME="$PWD/checkpoints_huggingface"
+export HF_HUB_DISABLE_XET=1
+export HF_HUB_DOWNLOAD_TIMEOUT=600
+export HF_HUB_ETAG_TIMEOUT=60
+
+read -rsp '请输入 Hugging Face 只读 Token: ' HF_TOKEN
+echo
+export HF_TOKEN
+
+python - <<'PY'
+from huggingface_hub import whoami
+info = whoami()
+print("Hugging Face authenticated as:", info.get("name", "unknown"))
+PY
+
+# 先续传失败的 Sundial；成功后继续下载/校验其余固定权重。
+python scripts/download_foundation_weights.py --model Sundial
+python scripts/download_foundation_weights.py
+
+python scripts/check_foundation_environment.py --offline --json
+
+unset HF_TOKEN
+```
+
+如果关闭 Xet 后 Sundial 仍因已有临时分片而失败，只清理该模型未完成的分片，再重新下载：
+
+```bash
+cd /你的实际路径/huawei-ts-tsfm
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate py3_10
+
+export HF_HOME="$PWD/checkpoints_huggingface"
+export HF_HUB_DISABLE_XET=1
+export HF_HUB_DOWNLOAD_TIMEOUT=600
+export HF_HUB_ETAG_TIMEOUT=60
+
+read -rsp '请输入 Hugging Face 只读 Token: ' HF_TOKEN
+echo
+export HF_TOKEN
+
+SUNDIAL_CACHE="$HF_HOME/hub/models--thuml--sundial-base-128m"
+find "$SUNDIAL_CACHE" -type f -name '*.incomplete' -print -delete
+
+python scripts/download_foundation_weights.py --model Sundial
+python scripts/download_foundation_weights.py
+python scripts/check_foundation_environment.py --offline --json
+
+unset HF_TOKEN
+```
+
 如服务器需要使用其他共享缓存，可在安装、下载和实验命令前统一设置
 `HF_HOME=/path/to/huggingface-cache`。下载完成后可离线检查：
 
