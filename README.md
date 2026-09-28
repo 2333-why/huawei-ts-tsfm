@@ -250,6 +250,62 @@ SUMMARY_PATH=results_foundation_models/run_summary.tsv \
   bash scripts/run_all_foundation_models_8gpu.sh
 ```
 
+## Cache warming and offline preflight
+
+### One-command updated-branch test
+
+`scripts/test_updated_tsfm.sh` runs compile checks, the complete pytest suite,
+the offline environment/checkpoint preflight, and the real-weight GPU smoke
+matrix. It selects the two- or eight-GPU runner from `GPUS`:
+
+```bash
+PYTHON=.venv-tsfm-modern/bin/python \
+GPUS="0 1 2 3 4 5 6 7" \
+SKIPPD_PARQUET=/path/to/Luoyang.parquet \
+PVOD_PARQUET=/path/to/YLJ.parquet \
+HF_HOME="$PWD/checkpoints_huggingface" \
+  bash scripts/test_updated_tsfm.sh
+```
+
+For code-only validation without datasets, weights, or GPUs:
+
+```bash
+PYTHON=.venv-tsfm-modern/bin/python TEST_SCOPE=unit \
+  bash scripts/test_updated_tsfm.sh
+```
+
+Outputs default to `results_updated_tsfm_test/`; override `RESULTS_ROOT` to
+change the destination.
+
+To warm exact pinned revisions, use one consistent local Hub cache:
+
+```bash
+export HF_HOME="$PWD/.cache/huggingface"
+hf download thuml/sundial-base-128m --revision 3212e42564493f520593e5414af4367fc4b49226
+hf download Maple728/TimeMoE-50M --revision 446753ee48ff3726d0606a81d0092d54acee995e
+hf download amazon/chronos-2 --revision 29ec3766d36d6f73f0696f85560a422f50e8498c
+hf download NX-AI/TiRex --revision 63c740922493f5fbe60b277609ec62babfba2762
+hf download google/timesfm-2.5-200m-transformers --revision 5a9806b9b291fad9233b5249d88263f1846304d3
+```
+
+Then inspect readiness without contacting the Hub:
+
+```bash
+/opt/data/private/penv/time/bin/python \
+  scripts/check_foundation_environment.py --offline --json
+```
+
+Offline preflight is credential-safe and local-cache-only.  It never downloads
+weights or installs packages.  A failed exit code reports structured blockers
+such as an incompatible Python floor, missing package, missing cache file,
+missing dataset, or unavailable GPU.
+
+With the specified base interpreter, the preflight is expected to exit `1` and
+report Python-floor/package blockers for Chronos2, TiRex, and TimesFM.  Run the
+same command from a provisioned modern environment after installing the modern
+profile and warming the pinned cache; a real checkpoint smoke is still a
+separate verification step.
+
 ## Artifacts and resume
 
 Each task directory contains four final artifacts:

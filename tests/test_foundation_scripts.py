@@ -34,6 +34,20 @@ COMPLETION_HEADER = (
 )
 
 
+def test_updated_tsfm_one_command_script_has_unit_and_smoke_gates():
+    script = Path(__file__).resolve().parents[1] / "scripts" / "test_updated_tsfm.sh"
+    source = script.read_text(encoding="utf-8")
+
+    assert script.is_file()
+    assert "TEST_SCOPE=\"${TEST_SCOPE:-smoke}\"" in source
+    assert '"$PYTHON" -m pytest -q' in source
+    assert "check_foundation_environment.py --offline --json" in source
+    assert "smoke_all_foundation_models_2gpu.sh" in source
+    assert "run_all_foundation_models_8gpu.sh" in source
+    assert 'HF_HUB_OFFLINE=1' in source
+    assert 'TRANSFORMERS_OFFLINE=1' in source
+
+
 def _fake_python(tmp_path: Path, repo: Path) -> Path:
     fake = tmp_path / "fake_foundation_python"
     fake.write_text(

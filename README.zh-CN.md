@@ -579,6 +579,57 @@ SUMMARY_PATH=results_foundation_models/run_summary.tsv \
   bash scripts/run_all_foundation_models_8gpu.sh
 ```
 
+## 缓存预热与离线预检
+
+### 更新分支一键测试
+
+`scripts/test_updated_tsfm.sh` 会依次执行代码编译检查、全量 pytest、离线环境与
+固定权重预检，以及真实权重 GPU smoke 矩阵。默认按 `GPUS` 自动选择双卡或八卡入口：
+
+```bash
+PYTHON=.venv-tsfm-modern/bin/python \
+GPUS="0 1 2 3 4 5 6 7" \
+SKIPPD_PARQUET=/path/to/Luoyang.parquet \
+PVOD_PARQUET=/path/to/YLJ.parquet \
+HF_HOME="$PWD/checkpoints_huggingface" \
+  bash scripts/test_updated_tsfm.sh
+```
+
+只进行不需要数据、权重或 GPU 的快速代码测试：
+
+```bash
+PYTHON=.venv-tsfm-modern/bin/python TEST_SCOPE=unit \
+  bash scripts/test_updated_tsfm.sh
+```
+
+日志和测试产物默认写入 `results_updated_tsfm_test/`，可通过 `RESULTS_ROOT` 修改。
+
+要预热精确的固定 revision，请使用一个一致的本地 Hub 缓存：
+
+```bash
+export HF_HOME="$PWD/.cache/huggingface"
+hf download thuml/sundial-base-128m --revision 3212e42564493f520593e5414af4367fc4b49226
+hf download Maple728/TimeMoE-50M --revision 446753ee48ff3726d0606a81d0092d54acee995e
+hf download amazon/chronos-2 --revision 29ec3766d36d6f73f0696f85560a422f50e8498c
+hf download NX-AI/TiRex --revision 63c740922493f5fbe60b277609ec62babfba2762
+hf download google/timesfm-2.5-200m-transformers --revision 5a9806b9b291fad9233b5249d88263f1846304d3
+```
+
+然后在不联系 Hub 的情况下检查就绪状态：
+
+```bash
+/opt/data/private/penv/time/bin/python \
+  scripts/check_foundation_environment.py --offline --json
+```
+
+离线预检不会暴露凭据，并且只使用本地缓存。它不会下载权重或安装包。失败的退出码会
+报告结构化阻塞项，例如 Python 版本下限不符、缺少包、缺少缓存文件、缺少数据集或 GPU
+不可用。
+
+使用指定的基础解释器时，预检预期退出码为 `1`，并为 Chronos2、TiRex 和 TimesFM 报告
+Python 版本下限/包阻塞项。在配置好的现代环境中安装现代 profile 并预热固定缓存后，
+使用同一命令；真实检查点 smoke 仍是独立的验证步骤。
+
 ## 产物与恢复
 
 每个任务目录包含四个最终产物：
