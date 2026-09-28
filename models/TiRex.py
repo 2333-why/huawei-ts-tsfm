@@ -10,6 +10,7 @@ from torch import nn
 
 from .base import ensure_forecast_shape
 from .common import _validate_history, _validate_pred_len
+from .local_weights import pretrained_kwargs, resolve_model_source
 from .registry import FoundationModelSpec, validate_model_mode
 from .trainability import configure_trainable
 
@@ -23,6 +24,16 @@ def _optional_tirex_loader() -> Any:
             "install it in a compatible environment"
         ) from exc
     return load_model
+
+
+def _optional_tirex_local_class() -> Any:
+    try:
+        from tirex import TiRexZero
+    except Exception as exc:
+        raise ImportError(
+            "TiRex local loading requires tirex-ts with the TiRexZero export"
+        ) from exc
+    return TiRexZero
 
 
 def _mean_value(output: Any) -> Any:
@@ -96,13 +107,21 @@ class TiRexBackend:
         self.model_id = spec.model_id
         self.revision = spec.revision if revision is None else revision
         self.device = torch.device(device)
-        load_model = _optional_tirex_loader()
-        model = load_model(
-            self.model_id,
-            device=str(self.device),
-            backend="torch",
-            hf_kwargs={"revision": self.revision},
-        )
+        source = resolve_model_source(self.model_name, self.model_id)
+        if source.is_local:
+            model = _optional_tirex_local_class().from_pretrained(
+                source.location,
+                device=str(self.device),
+                backend="torch",
+            )
+        else:
+            load_model = _optional_tirex_loader()
+            model = load_model(
+                source.location,
+                device=str(self.device),
+                backend="torch",
+                hf_kwargs=pretrained_kwargs(source, self.revision),
+            )
         if not isinstance(model, nn.Module):
             raise ValueError("TiRex loader must return its native torch.nn.Module")
         self.model = model

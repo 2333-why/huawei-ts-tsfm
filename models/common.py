@@ -9,6 +9,7 @@ from typing import Any, Optional, Tuple
 import torch
 
 from .base import ensure_forecast_shape
+from .local_weights import ModelSource, pretrained_kwargs, resolve_model_source
 from .registry import FoundationModelSpec, validate_model_mode
 from .trainability import configure_trainable
 
@@ -239,7 +240,9 @@ def _denormalise(
     return ensure_forecast_shape(forecast, batch=batch, pred_len=pred_len)
 
 
-def _load_pretrained(model_id: str, revision: str) -> Any:
+def _load_pretrained(
+    model_id: str, revision: str, model_name: Optional[str] = None
+) -> Any:
     try:
         from transformers import AutoModelForCausalLM
     except ImportError as exc:
@@ -247,10 +250,15 @@ def _load_pretrained(model_id: str, revision: str) -> Any:
             "foundation-model backends require Transformers; install the optional "
             "dependency before constructing a backend"
         ) from exc
+    source = (
+        ModelSource(location=model_id, is_local=False)
+        if model_name is None
+        else resolve_model_source(model_name, model_id)
+    )
     return AutoModelForCausalLM.from_pretrained(
-        model_id,
-        revision=revision,
+        source.location,
         trust_remote_code=True,
+        **pretrained_kwargs(source, revision),
     )
 
 
@@ -270,7 +278,7 @@ class _GenerateBackend:
         self.model_id = spec.model_id
         self.revision = spec.revision if revision is None else revision
         self.device = torch.device(device)
-        model = _load_pretrained(self.model_id, self.revision)
+        model = _load_pretrained(self.model_id, self.revision, self.model_name)
         moved = model.to(device)
         self.model = model if moved is None else moved
         self.model.eval()

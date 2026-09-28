@@ -41,6 +41,12 @@ echo "[3/4] 离线环境、数据、GPU与固定权重预检"
 export HF_HOME
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
+if [[ -n "${TSFM_WEIGHTS_ROOT:-}" || -n "${SUNDIAL_WEIGHT_DIR:-}" || \
+      -n "${TIMEMOE_WEIGHT_DIR:-}" || -n "${CHRONOS2_WEIGHT_DIR:-}" || \
+      -n "${TIREX_WEIGHT_DIR:-}" || -n "${TIMESFM_WEIGHT_DIR:-}" ]]; then
+    "$PYTHON" scripts/check_local_weights.py --verify-sha256 --json \
+        | tee "$RESULTS_ROOT/local_weights.json"
+fi
 "$PYTHON" scripts/check_foundation_environment.py --offline --json \
     | tee "$RESULTS_ROOT/preflight.json"
 

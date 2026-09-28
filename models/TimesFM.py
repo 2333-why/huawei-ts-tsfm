@@ -15,6 +15,7 @@ from .common import (
     _validate_pred_len,
     _validate_training_batch,
 )
+from .local_weights import pretrained_kwargs, resolve_model_source
 from .registry import FoundationModelSpec, validate_model_mode
 from .trainability import configure_trainable
 
@@ -80,10 +81,11 @@ class TimesFMBackend:
         self.revision = spec.revision if revision is None else revision
         self.device = torch.device(device)
         model_class = _optional_timesfm_class()
+        source = resolve_model_source(self.model_name, self.model_id)
         self.model = model_class.from_pretrained(
-            self.model_id,
-            revision=self.revision,
+            source.location,
             device_map=str(self.device),
+            **pretrained_kwargs(source, self.revision),
         )
         eval_method = getattr(self.model, "eval", None)
         if callable(eval_method):

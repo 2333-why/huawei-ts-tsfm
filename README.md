@@ -1,5 +1,8 @@
 # TSFM-only power forecasting
 
+For an offline server, use the browser-download and bucket-mounted local-weight
+workflow documented in [docs/OFFLINE_WEIGHTS_ZH.md](docs/OFFLINE_WEIGHTS_ZH.md).
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 This repository provides power-only forecasting with five time-series foundation

@@ -1,5 +1,7 @@
 # 仅 TSFM 的功率预测
 
+> 服务器无法访问 Hugging Face 时，请按 [浏览器下载权重与桶上离线加载](docs/OFFLINE_WEIGHTS_ZH.md) 配置 `TSFM_WEIGHTS_ROOT`。
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 本仓库提供仅使用功率数据的预测，支持五个时序基础模型：Sundial、TimeMoE、Chronos2、TiRex

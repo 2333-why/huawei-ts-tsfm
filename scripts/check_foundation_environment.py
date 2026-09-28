@@ -28,6 +28,11 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from models.registry import MODEL_NAMES, get_model_spec  # noqa: E402
+from models.local_weights import (  # noqa: E402
+    REQUIRED_WEIGHT_FILES,
+    configured_weight_directory,
+    inspect_local_weights,
+)
 
 
 SCHEMA_VERSION = "foundation-environment-v1"
@@ -61,38 +66,7 @@ _DATASET_OVERRIDES = {
     "skippd_luoyang": "SKIPPD_PARQUET",
     "pvod_station00_ylj": "PVOD_PARQUET",
 }
-_REQUIRED_CACHE_FILES = {
-    "Sundial": (
-        "config.json",
-        "generation_config.json",
-        "configuration_sundial.py",
-        "modeling_sundial.py",
-        "flow_loss.py",
-        "ts_generation_mixin.py",
-        "model.safetensors",
-    ),
-    "TimeMoE": (
-        "config.json",
-        "generation_config.json",
-        "configuration_time_moe.py",
-        "modeling_time_moe.py",
-        "ts_generation_mixin.py",
-        "model.safetensors",
-    ),
-    # The modern checkpoints intentionally keep a smaller, model-specific
-    # local-cache contract.  Presence is reported only; no loader is imported.
-    "Chronos2": (
-        "config.json",
-        "model.safetensors",
-    ),
-    "TiRex": (
-        "model.ckpt",
-    ),
-    "TimesFM": (
-        "config.json",
-        "model.safetensors",
-    ),
-}
+_REQUIRED_CACHE_FILES = REQUIRED_WEIGHT_FILES
 
 _MODEL_PYTHON_FLOORS = {
     "Sundial": "3.8",
@@ -863,11 +837,27 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
         python_blocked = not _python_version_at_least(runtime_python, python_floor)
         package_status, package_name, package_version = _model_package_report(model_name, packages)
         try:
-            raw_cache = _cached_model_files(
-                spec.model_id, spec.revision, required_files, cache_root_path
-            )
+            local_directory = configured_weight_directory(model_name)
         except Exception:
-            raw_cache = {"complete": False, "missing_files": list(required_files)}
+            local_directory = None
+        if local_directory is not None:
+            try:
+                local_report = inspect_local_weights(model_name)
+                raw_cache = {
+                    "complete": local_report["complete"],
+                    "missing_files": local_report["missing_files"],
+                }
+            except Exception:
+                raw_cache = {"complete": False, "missing_files": list(required_files)}
+            weight_source = "local_directory"
+        else:
+            try:
+                raw_cache = _cached_model_files(
+                    spec.model_id, spec.revision, required_files, cache_root_path
+                )
+            except Exception:
+                raw_cache = {"complete": False, "missing_files": list(required_files)}
+            weight_source = "huggingface_cache"
         cache = _normalise_cache_result(raw_cache, required_files)
         item: Dict[str, Any] = {
             "name": model_name,
@@ -899,7 +889,12 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
                     runtime_python,
                 )
             )
-        elif package_status == "pass" and not cache["complete"] and not offline:
+        elif (
+            package_status == "pass"
+            and not cache["complete"]
+            and not offline
+            and weight_source == "huggingface_cache"
+        ):
             item["network_attempted"] = True
             try:
                 probe = _normalise_probe_result(
