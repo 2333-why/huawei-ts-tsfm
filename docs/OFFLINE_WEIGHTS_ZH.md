@@ -70,3 +70,27 @@ export TIMESFM_WEIGHT_DIR=/mnt/bucket-c/TimesFM
 ```
 
 配置后，原有训练、推理和 `scripts/test_updated_tsfm.sh` 命令无需增加模型路径参数。代码会优先从这些目录加载，且仍将实验身份记录为仓库中锁定的 model ID 和 revision。
+
+## PVMMoE 服务器固定路径
+
+仓库已提供路径脚本，对应目录为：
+
+```text
+/data/PVMMoE/PRETRAINED_MODELS/sundial-base-128m
+/data/PVMMoE/PRETRAINED_MODELS/chronos2
+/data/PVMMoE/PRETRAINED_MODELS/TimeMoE
+/data/PVMMoE/PRETRAINED_MODELS/TiRex
+/data/PVMMoE/PRETRAINED_MODELS/TimesFM
+```
+
+在服务器上执行：
+
+```bash
+source scripts/use_pvmoe_local_weights.sh
+python scripts/check_local_weights.py --verify-sha256
+```
+
+TimeMoE、TiRex 和 TimesFM 的可解压权重包发布在：
+<https://github.com/2333-why/Huawei-ts-pure-ts/releases/tag/tsfm-weights-v1>
+
+解压三个 ZIP 后，将得到 `TimeMoE/`、`TiRex/` 和 `TimesFM/` 三个目录，直接上传到 `/data/PVMMoE/PRETRAINED_MODELS/` 即可。
