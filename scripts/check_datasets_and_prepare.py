@@ -23,7 +23,7 @@ from data_provider.power_only import (  # noqa: E402
     load_power_only_config,
 )
 DEFAULT_LUOYANG = Path(
-    "/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/"
+    "/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark/Benchmark_V1/"
     "Luoyang-Unified_format-V1-with_DNI_DHI.parquet"
 )
 DEFAULT_YLJ = Path(

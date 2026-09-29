@@ -1,7 +1,7 @@
 {
   "dataset": "LuoyangParquet",
   "paths": {
-    "parquet_file": "/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/Luoyang-Unified_format-V1-with_DNI_DHI.parquet",
+    "parquet_file": "/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark/Benchmark_V1/Luoyang-Unified_format-V1-with_DNI_DHI.parquet",
     "results_root": "./results_luoyang"
   },
   "fields": {

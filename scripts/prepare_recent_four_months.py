@@ -25,7 +25,7 @@ DEFAULT_DATASETS = {
     "luoyang": {
         "config": REPO_ROOT / "configs/datasets/skippd_luoyang.json",
         "parquet": Path(
-            "/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/"
+            "/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark/Benchmark_V1/"
             "Luoyang-Unified_format-V1-with_DNI_DHI.parquet"
         ),
     },

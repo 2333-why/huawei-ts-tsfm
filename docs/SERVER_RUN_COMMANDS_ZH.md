@@ -21,7 +21,7 @@ python --version
 脚本已经内置下列服务器路径：
 
 ```text
-/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/Luoyang-Unified_format-V1-with_DNI_DHI.parquet
+/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark/Benchmark_V1/Luoyang-Unified_format-V1-with_DNI_DHI.parquet
 /data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/YLJ-Unified_format-with_DNI_DHI.parquet
 
 /data/PVMMoE/PRETRAINED_MODELS/sundial-base-128m
