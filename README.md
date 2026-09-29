@@ -1,5 +1,8 @@
 # TSFM-only power forecasting
 
+For copy-ready server commands, see
+[服务器终端启动命令](docs/SERVER_RUN_COMMANDS_ZH.md).
+
 For an offline server, use the browser-download and bucket-mounted local-weight
 workflow documented in [docs/OFFLINE_WEIGHTS_ZH.md](docs/OFFLINE_WEIGHTS_ZH.md).
 
