@@ -172,7 +172,7 @@ DEBUG_MODE=0 CUDA_VISIBLE_DEVICES=0 \
 
 `scripts/smoke_all_foundation_models_2gpu.sh` is the bounded wrapper for
 `scripts/run_all_foundation_models_2gpu.sh`; the latter executes every one of
-the 68 supported tasks.  Both use `GPUS="0 1"` by default and create two
+the 84 registered tasks.  Both use `GPUS="0 1"` by default and create two
 process-level queues.  Each queue is serial, while the two queues may overlap.
 The queue launches a physical ordinal as
 `CUDA_VISIBLE_DEVICES=<ordinal>` and the runner uses the process-local
@@ -214,7 +214,7 @@ SUMMARY_PATH=results_foundation_models/run_summary.tsv \
 ## Eight-GPU batch script
 
 `scripts/run_all_foundation_models_8gpu.sh` is the fixed eight-GPU batch entry
-for all 68 supported tasks.  It defaults to `GPUS='0 1 2 3 4 5 6 7'` and
+for all 84 registered tasks.  It defaults to `GPUS='0 1 2 3 4 5 6 7'` and
 requires exactly eight distinct canonical physical GPU ordinals.  Tasks are
 assigned by `ordinal % 8`; each GPU queue is serial, while the eight queues may
 run in parallel.  Each process launches one physical ordinal as

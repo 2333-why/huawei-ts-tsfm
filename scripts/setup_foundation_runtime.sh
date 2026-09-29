@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install the five-model runtime into the environment that is already active,
+# Install the six-checkpoint runtime into the environment that is already active,
 # then download every registry-pinned checkpoint.  This script never creates
 # or activates a virtual environment.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,7 +14,7 @@ if ! command -v "$PYTHON" >/dev/null 2>&1 && [[ "$PYTHON" != */* ]]; then
     exit 2
 fi
 if ! "$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
-    echo "the complete five-model runtime requires Python 3.10 or newer" >&2
+    echo "the complete six-checkpoint runtime requires Python 3.10 or newer" >&2
     exit 2
 fi
 

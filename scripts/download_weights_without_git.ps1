@@ -53,6 +53,11 @@ MODELS = (
         "446753ee48ff3726d0606a81d0092d54acee995e",
     ),
     (
+        "TimeMoE200M",
+        "Maple728/TimeMoE-200M",
+        "794591bfeb1225fdf742cec0f4c71f20c3f3b87e",
+    ),
+    (
         "Chronos2",
         "amazon/chronos-2",
         "29ec3766d36d6f73f0696f85560a422f50e8498c",
@@ -106,7 +111,7 @@ checksum.write_text(
     encoding="ascii",
 )
 
-print("\nAll five model checkpoints downloaded.")
+print("\nAll six model checkpoints downloaded.")
 print(f"Archive: {archive}")
 print(f"SHA256: {checksum}")
 '@

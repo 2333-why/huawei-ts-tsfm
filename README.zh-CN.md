@@ -308,7 +308,7 @@ unset HF_TOKEN
 ### 在本地下载权重并通过挂载桶导入服务器
 
 如果华为服务器无法直接下载 Hugging Face 大文件，可以在任意另一台能访问 Hugging Face
-的 Windows 电脑上克隆本仓库，然后运行仓库自带的跨机器打包程序。它会下载五个固定
+的 Windows 电脑上克隆本仓库，然后运行仓库自带的跨机器打包程序。它会下载六个固定
 revision、生成完整的 `checkpoints_huggingface` 缓存、打包为 `tar.gz` 并生成 SHA256。
 不要直接拖拽未打包的缓存目录，因为 Hugging Face 缓存可能包含符号链接，而对象存储挂载
 可能破坏链接关系。
@@ -325,7 +325,7 @@ powershell -ExecutionPolicy Bypass -File ".\download_weights_without_git.ps1"
 
 该脚本不依赖本仓库的其他文件，也不会创建或激活 Python 环境。请先激活需要使用的
 Python 3.9+ 环境；脚本会直接使用当前终端中的 `python`，安装/更新 `huggingface_hub`，
-创建 `huawei-ts-tsfm-weights` 目录，安全提示输入 Hugging Face 只读 Token，下载五个固定
+创建 `huawei-ts-tsfm-weights` 目录，安全提示输入 Hugging Face 只读 Token，下载六个固定
 revision，并自动生成缓存归档及 SHA256 文件。下载中断后重新运行同一命令即可继续。
 
 在另一台 Windows 电脑的 PowerShell 中执行；仓库可以克隆到任意路径：
@@ -408,7 +408,7 @@ else
 fi
 ```
 
-最后在完全离线模式下验证环境、数据集和五个模型权重：
+最后在完全离线模式下验证环境、数据集和六个模型权重：
 
 ```bash
 cd /home/ma-user/work/why/huawei-ts-tsfm-main
@@ -423,7 +423,7 @@ export TRANSFORMERS_OFFLINE=1
 python scripts/check_foundation_environment.py --offline --json
 ```
 
-五个模型的 `status` 都应为 `pass`，不能再出现 `download_required`。程序最终使用的权重
+六个模型的 `status` 都应为 `pass`，不能再出现 `download_required`。程序最终使用的权重
 目录为 `/home/ma-user/work/why/huawei-ts-tsfm-main/checkpoints_huggingface`。
 
 如服务器需要使用其他共享缓存，可在安装、下载和实验命令前统一设置
@@ -504,7 +504,7 @@ DEBUG_MODE=0 CUDA_VISIBLE_DEVICES=0 \
 ## 双 GPU 批处理脚本
 
 `scripts/smoke_all_foundation_models_2gpu.sh` 是
-`scripts/run_all_foundation_models_2gpu.sh` 的有边界包装器；后者会执行 68 个支持的任务。
+`scripts/run_all_foundation_models_2gpu.sh` 的有边界包装器；后者会执行 84 个注册任务。
 两者默认使用 `GPUS="0 1"`，并创建两个进程级队列。每个队列内部串行执行，而两个队列
 可以重叠运行。队列会将一个物理序号作为
 `CUDA_VISIBLE_DEVICES=<ordinal>` 启动，运行器使用进程内的
@@ -545,7 +545,7 @@ SUMMARY_PATH=results_foundation_models/run_summary.tsv \
 
 ## 八 GPU 批处理脚本
 
-`scripts/run_all_foundation_models_8gpu.sh` 是运行全部 68 个支持任务的固定八 GPU 批量入口。
+`scripts/run_all_foundation_models_8gpu.sh` 是运行全部 84 个注册任务的固定八 GPU 批量入口。
 它默认使用 `GPUS='0 1 2 3 4 5 6 7'`，并严格要求八个不同且规范的物理 GPU 序号。任务按
 `ordinal % 8` 分配；每张卡的队列串行执行，而八个队列可以并行运行。每个进程将一个物理
 序号作为 `CUDA_VISIBLE_DEVICES=<ordinal>` 启动，运行器使用进程内的
