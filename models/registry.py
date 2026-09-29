@@ -31,7 +31,14 @@ class FoundationModelSpec:
     adapter_target_modules: Tuple[str, ...] = DEFAULT_ADAPTER_TARGET_MODULES
 
 
-MODEL_NAMES = ("Sundial", "TimeMoE", "Chronos2", "TiRex", "TimesFM")
+MODEL_NAMES = (
+    "Sundial",
+    "TimeMoE",
+    "TimeMoE200M",
+    "Chronos2",
+    "TiRex",
+    "TimesFM",
+)
 
 MODEL_SPECS: Dict[str, FoundationModelSpec] = {
     "Sundial": FoundationModelSpec(
@@ -45,6 +52,13 @@ MODEL_SPECS: Dict[str, FoundationModelSpec] = {
         name="TimeMoE",
         model_id="Maple728/TimeMoE-50M",
         revision="446753ee48ff3726d0606a81d0092d54acee995e",
+        entrypoint="models.TimeMoE:TimeMoEBackend",
+        last_layer_selector="lm_heads",
+    ),
+    "TimeMoE200M": FoundationModelSpec(
+        name="TimeMoE200M",
+        model_id="Maple728/TimeMoE-200M",
+        revision="794591bfeb1225fdf742cec0f4c71f20c3f3b87e",
         entrypoint="models.TimeMoE:TimeMoEBackend",
         last_layer_selector="lm_heads",
     ),

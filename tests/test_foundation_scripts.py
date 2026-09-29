@@ -82,7 +82,7 @@ def _fake_python(tmp_path: Path, repo: Path) -> Path:
             if args and args[-1] == "--list-models":
                 event_write({"kind": "list", "args": args,
                              "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")})
-                print("Sundial\nTimeMoE\nChronos2\nTiRex\nTimesFM")
+                print("Sundial\nTimeMoE\nTimeMoE200M\nChronos2\nTiRex\nTimesFM")
                 raise SystemExit(0)
             if args and args[-1] == "--list-modes":
                 event_write({"kind": "list-modes", "args": args,
@@ -301,7 +301,7 @@ def test_two_gpu_smoke_expands_registry_tasks_with_serial_queues_and_contained_o
     )
     assert result.returncode == 0, result.stdout + result.stderr
     events = [event for event in _events(record) if event["kind"] == "run"]
-    assert TASK_COUNT == 68
+    assert TASK_COUNT == 84
     expected = {
         (task.seq_len, task.pred_len, task.dataset, task.model, task.mode)
         for task in TASKS
@@ -346,7 +346,7 @@ def test_eight_gpu_entry_distributes_exact_matrix_over_eight_serial_queues(tmp_p
     )
     assert result.returncode == 0, result.stdout + result.stderr
     events = [event for event in _events(record) if event["kind"] == "run"]
-    assert len(events) == TASK_COUNT == 68
+    assert len(events) == TASK_COUNT == 84
     assert Counter(event["gpu"] for event in events) == Counter(
         {"0": 9, "1": 9, "2": 9, "3": 9, "4": 8, "5": 8, "6": 8, "7": 8}
     )
@@ -365,7 +365,7 @@ def test_eight_gpu_entry_distributes_exact_matrix_over_eight_serial_queues(tmp_p
     assert all(event["args"][event["args"].index("--device") + 1] == "cuda:0" for event in events)
     rows = (output_root / "smoke_summary.tsv").read_text(encoding="utf-8").splitlines()
     assert rows[0] == SUMMARY_HEADER and len(rows) == TASK_COUNT + 1
-    assert [row.split("\t")[8] for row in rows[1:]] == [str(ordinal % 8) for ordinal in range(68)]
+    assert [row.split("\t")[8] for row in rows[1:]] == [str(ordinal % 8) for ordinal in range(84)]
     assert all(row.split("\t")[5] == "PASS" for row in rows[1:])
 
 

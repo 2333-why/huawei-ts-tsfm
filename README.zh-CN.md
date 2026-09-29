@@ -4,8 +4,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-本仓库提供仅使用功率数据的预测，支持五个时序基础模型：Sundial、TimeMoE、Chronos2、TiRex
-和 TimesFM。每次运行都使用形状为 `[B, L, 1]` 的单一归一化功率通道，并返回
+本仓库提供仅使用功率数据的预测，注册了六个权重：Sundial、TimeMoE-50M、
+TimeMoE-200M、Chronos2、TiRex 和 TimesFM。每次运行都使用形状为 `[B, L, 1]` 的单一归一化功率通道，并返回
 `[B, H, 1]`。实现位于 `models/` 下；可选模型包采用惰性导入，因此模型目录和任务列表
 命令可以离线工作。
 不存在 `foundation_models/` 实现包。
@@ -18,6 +18,7 @@ registry 是检查点身份、revision、模式和最后一层选择器的事实
 | --- | --- | --- | --- | --- |
 | `Sundial` | `thuml/sundial-base-128m` | `3212e42564493f520593e5414af4367fc4b49226` | `zero_shot`、`adapter`、`full`、`last_layer` | `flow_loss` |
 | `TimeMoE` | `Maple728/TimeMoE-50M` | `446753ee48ff3726d0606a81d0092d54acee995e` | `zero_shot`、`adapter`、`full`、`last_layer` | `lm_heads` |
+| `TimeMoE200M` | `Maple728/TimeMoE-200M` | `794591bfeb1225fdf742cec0f4c71f20c3f3b87e` | `zero_shot`、`adapter`、`full`、`last_layer` | `lm_heads` |
 | `Chronos2` | `amazon/chronos-2` | `29ec3766d36d6f73f0696f85560a422f50e8498c` | `zero_shot`、`adapter`、`full`、`last_layer` | `output_patch_embedding` |
 | `TiRex` | `NX-AI/TiRex` | `63c740922493f5fbe60b277609ec62babfba2762` | `zero_shot` | — |
 | `TimesFM` | `google/timesfm-2.5-200m-transformers` | `5a9806b9b291fad9233b5249d88263f1846304d3` | `zero_shot`、`adapter`、`full`、`last_layer` | `output_projection_point` |
@@ -47,10 +48,12 @@ TiRex 有意只支持 zero-shot；不支持的模式会在构造其可选包或�
 | `seq96_h4` | `skippd_luoyang` | 96 | 48 |
 | `seq96_h4` | `pvod_station00_ylj` | 96 | 16 |
 
-共有四种数据集/窗口设置。每种设置都有四个支持训练的模型，各支持四种模式，另加一个
+共有四种数据集/窗口设置。每种设置都有五个支持训练的权重，各支持四种模式，另加一个
 TiRex zero-shot 模式：
 
-`4 settings × (4 trainable models × 4 modes + 1 TiRex mode) = 68 tasks`。
+`4 settings × (5 trainable checkpoints × 4 modes + 1 TiRex mode) = 84 tasks`。
+
+PVMMoE 一键脚本排除 TimesFM，因此运行 68 个任务。
 
 ## 运行环境约定
 
@@ -612,6 +615,7 @@ PYTHON=.venv-tsfm-modern/bin/python TEST_SCOPE=unit \
 export HF_HOME="$PWD/.cache/huggingface"
 hf download thuml/sundial-base-128m --revision 3212e42564493f520593e5414af4367fc4b49226
 hf download Maple728/TimeMoE-50M --revision 446753ee48ff3726d0606a81d0092d54acee995e
+hf download Maple728/TimeMoE-200M --revision 794591bfeb1225fdf742cec0f4c71f20c3f3b87e
 hf download amazon/chronos-2 --revision 29ec3766d36d6f73f0696f85560a422f50e8498c
 hf download NX-AI/TiRex --revision 63c740922493f5fbe60b277609ec62babfba2762
 hf download google/timesfm-2.5-200m-transformers --revision 5a9806b9b291fad9233b5249d88263f1846304d3
@@ -648,3 +652,18 @@ TSV 汇总。设置 `RESUME=1` 时，只有在身份、schema、数据指纹、�
 
 历史结果目录组件 `foundation_models` 为恢复兼容性而保留。它只是结果路径，不是 Python
 包或实现目录。
+
+## 当前环境限制
+
+指定的 `/opt/data/private/penv/time/bin/python` 仍是 Python 3.8.18 legacy profile，使用
+Torch 2.3.1、Transformers 4.46.2 和 PEFT 0.13.2；它无法承载全部已注册的现代后端。
+
+在 2026-08-28 使用 `.venv/tsfm-modern` 验证（Python 3.11.0、torch 2.4.1 with CUDA 12.1
+runtime、Transformers 5.3.0、PEFT 0.18.1、chronos-forecasting 2.3.1 和 tirex-ts 1.4.2）
+时，规范的真实检查点 CUDA smoke 矩阵在两张 NVIDIA RTX 4090 GPU 上运行，并完成
+`68/68 PASS`。已验证的检查点固定值为
+`thuml/sundial-base-128m@3212e42564493f520593e5414af4367fc4b49226`、
+`Maple728/TimeMoE-50M@446753ee48ff3726d0606a81d0092d54acee995e`、
+`amazon/chronos-2@29ec3766d36d6f73f0696f85560a422f50e8498c`、
+`NX-AI/TiRex@63c740922493f5fbe60b277609ec62babfba2762` 和
+`google/timesfm-2.5-200m-transformers@5a9806b9b291fad9233b5249d88263f1846304d3`。

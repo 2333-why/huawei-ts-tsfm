@@ -140,9 +140,9 @@ def test_complete_reference_environment_is_ok_and_skips_network(
     assert all(item["network_attempted"] is False for item in report["models"])
     assert all(item["download_required"] is False for item in report["models"])
     assert [item["status"] for item in report["models"]] == [
-        "pass", "pass", "blocked", "blocked", "blocked"
+        "pass", "pass", "pass", "blocked", "blocked", "blocked"
     ]
-    assert all(item["network_status"] == "python_blocked" for item in report["models"][2:])
+    assert all(item["network_status"] == "python_blocked" for item in report["models"][3:])
     assert network_calls == []
 
 
@@ -175,7 +175,12 @@ def test_report_rendering_and_section_order_are_deterministic(
         "pvod_station00_ylj",
     ]
     assert [item["name"] for item in first["models"]] == [
-        "Sundial", "TimeMoE", "Chronos2", "TiRex", "TimesFM"
+        "Sundial",
+        "TimeMoE",
+        "TimeMoE200M",
+        "Chronos2",
+        "TiRex",
+        "TimesFM",
     ]
     assert list(first["interpreter"]) == [
         "status",
@@ -460,7 +465,9 @@ def test_torch_cuda_build_mismatch_is_a_package_failure(
 def test_required_cache_files_and_registry_pins_are_exact(environment_module):
     module = environment_module
 
-    assert module.MODEL_NAMES == ("Sundial", "TimeMoE", "Chronos2", "TiRex", "TimesFM")
+    assert module.MODEL_NAMES == (
+        "Sundial", "TimeMoE", "TimeMoE200M", "Chronos2", "TiRex", "TimesFM"
+    )
     assert module._REQUIRED_CACHE_FILES == {
         "Sundial": (
             "config.json",
@@ -472,6 +479,14 @@ def test_required_cache_files_and_registry_pins_are_exact(environment_module):
             "model.safetensors",
         ),
         "TimeMoE": (
+            "config.json",
+            "generation_config.json",
+            "configuration_time_moe.py",
+            "modeling_time_moe.py",
+            "ts_generation_mixin.py",
+            "model.safetensors",
+        ),
+        "TimeMoE200M": (
             "config.json",
             "generation_config.json",
             "configuration_time_moe.py",
@@ -506,6 +521,10 @@ def test_required_cache_files_and_registry_pins_are_exact(environment_module):
             "Maple728/TimeMoE-50M",
             "446753ee48ff3726d0606a81d0092d54acee995e",
         ),
+        "TimeMoE200M": (
+            "Maple728/TimeMoE-200M",
+            "794591bfeb1225fdf742cec0f4c71f20c3f3b87e",
+        ),
         "Chronos2": (
             "amazon/chronos-2",
             "29ec3766d36d6f73f0696f85560a422f50e8498c",
@@ -523,6 +542,24 @@ def test_required_cache_files_and_registry_pins_are_exact(environment_module):
         name: (module.get_model_spec(name).model_id, module.get_model_spec(name).revision)
         for name in module.MODEL_NAMES
     } == expected
+
+
+def test_collect_environment_can_limit_models_for_an_offline_run(
+    environment_module, monkeypatch, tmp_path
+):
+    module = environment_module
+    _install_happy_fakes(monkeypatch, module, tmp_path)
+    monkeypatch.setattr(module, "_runtime_python_version", lambda: "3.8.18")
+    monkeypatch.setattr(module.sys, "executable", "/opt/data/private/penv/time/bin/python")
+
+    report = module.collect_environment(
+        offline=True, model_names=("Sundial", "TimeMoE")
+    )
+
+    assert [item["name"] for item in report["models"]] == ["Sundial", "TimeMoE"]
+
+    with pytest.raises(ValueError, match="unique non-empty"):
+        module.collect_environment(offline=True, model_names=("Sundial", "Sundial"))
 
 
 @pytest.mark.parametrize(
@@ -827,11 +864,18 @@ def test_cache_miss_reachable_head_passes_but_marks_download_required(
 
     assert report["ok"] is False
     assert [item["status"] for item in report["models"]] == [
-        "download_required", "download_required", "blocked", "blocked", "blocked"
+        "download_required",
+        "download_required",
+        "download_required",
+        "blocked",
+        "blocked",
+        "blocked",
     ]
-    assert [item["network_attempted"] for item in report["models"]] == [True, True, False, False, False]
+    assert [item["network_attempted"] for item in report["models"]] == [
+        True, True, True, False, False, False
+    ]
     assert all(item["download_required"] is True for item in report["models"])
-    assert [call[2] for call in calls] == [2.5, 2.5]
+    assert [call[2] for call in calls] == [2.5, 2.5, 2.5]
     assert calls[0][:2] == (
         "thuml/sundial-base-128m",
         "3212e42564493f520593e5414af4367fc4b49226",
@@ -1035,9 +1079,11 @@ def test_cache_miss_network_failures_are_sanitized(
     report = module.collect_environment()
 
     assert report["ok"] is False
-    assert [item["status"] for item in report["models"][:2]] == ["download_required", "download_required"]
-    assert all(item["network_status"] == expected for item in report["models"][:2])
-    assert all(item["status"] == "blocked" for item in report["models"][2:])
+    assert [item["status"] for item in report["models"][:3]] == [
+        "download_required", "download_required", "download_required"
+    ]
+    assert all(item["network_status"] == expected for item in report["models"][:3])
+    assert all(item["status"] == "blocked" for item in report["models"][3:])
     assert all("error" not in item for item in report["models"])
 
 
@@ -1054,8 +1100,8 @@ def test_offline_cache_miss_never_calls_network(environment_module, monkeypatch,
     assert report["ok"] is False
     assert called == []
     assert all(item["network_attempted"] is False for item in report["models"])
-    assert all(item["network_status"] == "offline" for item in report["models"][:2])
-    assert all(item["network_status"] == "python_blocked" for item in report["models"][2:])
+    assert all(item["network_status"] == "offline" for item in report["models"][:3])
+    assert all(item["network_status"] == "python_blocked" for item in report["models"][3:])
 
 
 @pytest.mark.parametrize("timeout", [0, -1, 10.0001, float("nan"), float("inf")])
@@ -1091,7 +1137,7 @@ def test_credential_and_proxy_sentinels_never_reach_text_json_or_cli_streams(
     assert module.main(["--json", "--offline"]) == 1
     streams = capsys.readouterr()
 
-    assert len(probe_calls) == 2
+    assert len(probe_calls) == 3
     for value in (text, rendered, streams.out, streams.err):
         assert SENTINEL not in value
         assert "RuntimeError" not in value

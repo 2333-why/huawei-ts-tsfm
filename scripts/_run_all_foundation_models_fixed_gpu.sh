@@ -35,6 +35,7 @@ RESUME="${RESUME:-0}"
 GPUS="${GPUS:-$DEFAULT_GPUS}"
 SKIPPD_PARQUET="${SKIPPD_PARQUET:-}"
 PVOD_PARQUET="${PVOD_PARQUET:-}"
+FOUNDATION_MODELS="${FOUNDATION_MODELS:-}"
 
 if [[ "$SMOKE" != "0" && "$SMOKE" != "1" ]]; then
     echo "SMOKE must be 0 or 1" >&2
@@ -42,6 +43,10 @@ if [[ "$SMOKE" != "0" && "$SMOKE" != "1" ]]; then
 fi
 if [[ "$RESUME" != "0" && "$RESUME" != "1" ]]; then
     echo "RESUME must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$FOUNDATION_MODELS" == *$'\n'* || "$FOUNDATION_MODELS" == *$'\t'* ]]; then
+    echo "FOUNDATION_MODELS must be a space-separated registry subset" >&2
     exit 2
 fi
 
@@ -329,16 +334,27 @@ for index in "${!EXPECTED_MODES[@]}"; do
 done
 
 TASK_FILE="$TEMP_DIR/tasks.tsv"
-if ! "$CONFIG_PYTHON" - "$ROOT_DIR" >"$TASK_FILE" <<'PY'
+if ! "$CONFIG_PYTHON" - "$ROOT_DIR" "$FOUNDATION_MODELS" >"$TASK_FILE" <<'PY'
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+selection_value = sys.argv[2]
 sys.path.insert(0, str(root))
-from models.registry import get_model_spec
+from models.registry import MODEL_NAMES, get_model_spec
 from models.tasks import iter_experiment_tasks
 
+selected = tuple(selection_value.split()) if selection_value else tuple(MODEL_NAMES)
+if (
+    not selected
+    or len(set(selected)) != len(selected)
+    or any(name not in MODEL_NAMES for name in selected)
+):
+    raise SystemExit("FOUNDATION_MODELS must be a unique non-empty registry subset")
+
 for task in iter_experiment_tasks():
+    if task.model not in selected:
+        continue
     spec = get_model_spec(task.model)
     values = (
         task.setting,
@@ -357,12 +373,13 @@ then
     exit 2
 fi
 
-if ! "$CONFIG_PYTHON" - "$ROOT_DIR" "$TASK_FILE" <<'PY'
+if ! "$CONFIG_PYTHON" - "$ROOT_DIR" "$TASK_FILE" "$FOUNDATION_MODELS" <<'PY'
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
 task_path = Path(sys.argv[2])
+selection_value = sys.argv[3]
 sys.path.insert(0, str(root))
 from models.registry import MODEL_NAMES, RUN_MODES, get_model_spec
 from models.tasks import iter_experiment_tasks
@@ -371,6 +388,13 @@ if not MODEL_NAMES:
     raise SystemExit("unexpected foundation model catalog")
 if not RUN_MODES:
     raise SystemExit("unexpected foundation mode catalog")
+selected = tuple(selection_value.split()) if selection_value else tuple(MODEL_NAMES)
+if (
+    not selected
+    or len(set(selected)) != len(selected)
+    or any(name not in MODEL_NAMES for name in selected)
+):
+    raise SystemExit("unexpected foundation model selection")
 actual = []
 for raw in task_path.read_text(encoding="utf-8").splitlines():
     fields = raw.split("\t")
@@ -379,6 +403,8 @@ for raw in task_path.read_text(encoding="utf-8").splitlines():
     actual.append(tuple(fields))
 expected = []
 for task in iter_experiment_tasks():
+    if task.model not in selected:
+        continue
     spec = get_model_spec(task.model)
     expected.append((
         task.setting,

@@ -71,6 +71,7 @@ _REQUIRED_CACHE_FILES = REQUIRED_WEIGHT_FILES
 _MODEL_PYTHON_FLOORS = {
     "Sundial": "3.8",
     "TimeMoE": "3.8",
+    "TimeMoE200M": "3.8",
     "Chronos2": "3.10",
     "TiRex": "3.10",
     "TimesFM": "3.10",
@@ -83,6 +84,12 @@ _MODEL_PACKAGE_DESCRIPTORS = {
         "label": "-",
     },
     "TimeMoE": {
+        "distribution": None,
+        "export": None,
+        "specifier": None,
+        "label": "-",
+    },
+    "TimeMoE200M": {
         "distribution": None,
         "export": None,
         "specifier": None,
@@ -782,7 +789,12 @@ def _model_package_report(model_name: str, package_items: Sequence[Mapping[str, 
     return "pass", distribution_name, version
 
 
-def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) -> Dict[str, Any]:
+def collect_environment(
+    *,
+    offline: bool = False,
+    network_timeout: float = 3.0,
+    model_names: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
     """Collect a deterministic, credential-free report of local readiness."""
 
     try:
@@ -793,6 +805,13 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
         raise ValueError("network_timeout must be positive and at most 10 seconds")
 
     _validate_model_descriptors()
+    selected_models = tuple(MODEL_NAMES if model_names is None else model_names)
+    if (
+        not selected_models
+        or len(set(selected_models)) != len(selected_models)
+        or any(name not in MODEL_NAMES for name in selected_models)
+    ):
+        raise ValueError("model_names must be a unique non-empty registry subset")
     runtime_python = _runtime_python_version()
     profile = _dependency_profile_for_python(runtime_python)
     interpreter = _interpreter_report(profile=profile)
@@ -829,7 +848,7 @@ def collect_environment(*, offline: bool = False, network_timeout: float = 3.0) 
     cache_root_report = {"status": cache_root_status, "path": cache_root_value}
 
     models: List[Dict[str, Any]] = []
-    for model_name in MODEL_NAMES:
+    for model_name in selected_models:
         spec = get_model_spec(model_name)
         descriptor = _MODEL_DESCRIPTORS[model_name]
         required_files = descriptor["required_cache_files"]
@@ -1052,6 +1071,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--network-timeout", type=_network_timeout_argument, default=3.0)
+    parser.add_argument("--models", nargs="+", choices=MODEL_NAMES)
     return parser
 
 
@@ -1059,7 +1079,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     """Run the preflight CLI and return 0 for pass, 1 for failed checks."""
 
     args = _parser().parse_args(argv)
-    report = collect_environment(offline=bool(args.offline), network_timeout=args.network_timeout)
+    report = collect_environment(
+        offline=bool(args.offline),
+        network_timeout=args.network_timeout,
+        model_names=args.models,
+    )
     output = render_json(report) if args.json_output else render_text(report)
     sys.stdout.write(output)
     return 0 if report.get("ok") is True else 1

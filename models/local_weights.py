@@ -14,6 +14,7 @@ WEIGHTS_ROOT_ENV = "TSFM_WEIGHTS_ROOT"
 MODEL_WEIGHT_ENVS = {
     "Sundial": "SUNDIAL_WEIGHT_DIR",
     "TimeMoE": "TIMEMOE_WEIGHT_DIR",
+    "TimeMoE200M": "TIMEMOE_200M_WEIGHT_DIR",
     "Chronos2": "CHRONOS2_WEIGHT_DIR",
     "TiRex": "TIREX_WEIGHT_DIR",
     "TimesFM": "TIMESFM_WEIGHT_DIR",
@@ -37,6 +38,14 @@ REQUIRED_WEIGHT_FILES = {
         "ts_generation_mixin.py",
         "model.safetensors",
     ),
+    "TimeMoE200M": (
+        "config.json",
+        "generation_config.json",
+        "configuration_time_moe.py",
+        "modeling_time_moe.py",
+        "ts_generation_mixin.py",
+        "model.safetensors",
+    ),
     "Chronos2": ("config.json", "model.safetensors"),
     "TiRex": ("model.ckpt",),
     "TimesFM": ("config.json", "model.safetensors"),
@@ -53,6 +62,11 @@ WEIGHT_FILE_METADATA = {
         "model.safetensors",
         226_760_264,
         "0127209833663df6f5ae3cf1c3316f739a8dd1dae27e59036268bbfdb48f91a4",
+    ),
+    "TimeMoE200M": (
+        "model.safetensors",
+        906_450_104,
+        "28d1cbf480c1f63d4ad56d8b7649d9860b9afa9f31abeedff9decea48d9aee57",
     ),
     "Chronos2": (
         "model.safetensors",

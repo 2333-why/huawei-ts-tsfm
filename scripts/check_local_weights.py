@@ -28,7 +28,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--weights-root",
-        help="root containing Sundial/TimeMoE/Chronos2/TiRex/TimesFM folders",
+        help="root containing one subfolder for every selected registry model",
     )
     parser.add_argument(
         "--models", nargs="+", choices=MODEL_NAMES, default=list(MODEL_NAMES)
@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument(
         "--verify-sha256",
         action="store_true",
-        help="hash the five large files (slower, recommended after bucket upload)",
+        help="hash the selected large files (slower, recommended after bucket upload)",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()

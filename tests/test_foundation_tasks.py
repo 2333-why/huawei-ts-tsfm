@@ -12,9 +12,9 @@ def test_task_matrix_has_expected_cardinality_and_is_deterministic():
     first = list(iter_experiment_tasks())
     second = list(iter_experiment_tasks())
 
-    assert len(first) == 68
+    assert len(first) == 84
     assert first == second
-    assert len(set(first)) == 68
+    assert len(set(first)) == 84
     assert all(isinstance(task, ExperimentTask) for task in first)
 
 
@@ -34,7 +34,7 @@ def test_task_matrix_maps_each_setting_to_dataset_specific_horizon():
         (setting, dataset, seq_len, pred_len)
         for (setting, dataset), (seq_len, pred_len) in expected_task_shapes.items()
     }
-    assert [(task.model, task.mode) for task in tasks[:17]] == [
+    assert [(task.model, task.mode) for task in tasks[:21]] == [
         ("Sundial", "zero_shot"),
         ("Sundial", "adapter"),
         ("Sundial", "full"),
@@ -43,6 +43,10 @@ def test_task_matrix_maps_each_setting_to_dataset_specific_horizon():
         ("TimeMoE", "adapter"),
         ("TimeMoE", "full"),
         ("TimeMoE", "last_layer"),
+        ("TimeMoE200M", "zero_shot"),
+        ("TimeMoE200M", "adapter"),
+        ("TimeMoE200M", "full"),
+        ("TimeMoE200M", "last_layer"),
         ("Chronos2", "zero_shot"),
         ("Chronos2", "adapter"),
         ("Chronos2", "full"),
@@ -62,6 +66,10 @@ def test_task_matrix_maps_each_setting_to_dataset_specific_horizon():
         ("TimeMoE", "adapter"),
         ("TimeMoE", "full"),
         ("TimeMoE", "last_layer"),
+        ("TimeMoE200M", "zero_shot"),
+        ("TimeMoE200M", "adapter"),
+        ("TimeMoE200M", "full"),
+        ("TimeMoE200M", "last_layer"),
         ("Chronos2", "zero_shot"),
         ("Chronos2", "adapter"),
         ("Chronos2", "full"),

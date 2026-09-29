@@ -5,8 +5,8 @@ workflow documented in [docs/OFFLINE_WEIGHTS_ZH.md](docs/OFFLINE_WEIGHTS_ZH.md).
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-This repository provides power-only forecasting with five time-series foundation
-models: Sundial, TimeMoE, Chronos2, TiRex, and TimesFM.  Each run consumes a
+This repository provides power-only forecasting with six registered checkpoints:
+Sundial, TimeMoE-50M, TimeMoE-200M, Chronos2, TiRex, and TimesFM. Each run consumes a
 single normalized power channel with shape `[B, L, 1]` and returns
 `[B, H, 1]`.  The implementations live under `models/`; optional model
 packages are imported lazily so catalog and task-list commands work offline.
@@ -21,6 +21,7 @@ and last-layer selectors.
 | --- | --- | --- | --- | --- |
 | `Sundial` | `thuml/sundial-base-128m` | `3212e42564493f520593e5414af4367fc4b49226` | `zero_shot`, `adapter`, `full`, `last_layer` | `flow_loss` |
 | `TimeMoE` | `Maple728/TimeMoE-50M` | `446753ee48ff3726d0606a81d0092d54acee995e` | `zero_shot`, `adapter`, `full`, `last_layer` | `lm_heads` |
+| `TimeMoE200M` | `Maple728/TimeMoE-200M` | `794591bfeb1225fdf742cec0f4c71f20c3f3b87e` | `zero_shot`, `adapter`, `full`, `last_layer` | `lm_heads` |
 | `Chronos2` | `amazon/chronos-2` | `29ec3766d36d6f73f0696f85560a422f50e8498c` | `zero_shot`, `adapter`, `full`, `last_layer` | `output_patch_embedding` |
 | `TiRex` | `NX-AI/TiRex` | `63c740922493f5fbe60b277609ec62babfba2762` | `zero_shot` | — |
 | `TimesFM` | `google/timesfm-2.5-200m-transformers` | `5a9806b9b291fad9233b5249d88263f1846304d3` | `zero_shot`, `adapter`, `full`, `last_layer` | `output_projection_point` |
@@ -53,10 +54,12 @@ The supported dataset/window rows are fixed:
 | `seq96_h4` | `skippd_luoyang` | 96 | 48 |
 | `seq96_h4` | `pvod_station00_ylj` | 96 | 16 |
 
-There are four dataset/window settings.  Each has four trainable models with
+There are four dataset/window settings. Each has five trainable checkpoints with
 four modes plus one TiRex zero-shot mode:
 
-`4 settings × (4 trainable models × 4 modes + 1 TiRex mode) = 68 tasks`.
+`4 settings × (5 trainable checkpoints × 4 modes + 1 TiRex mode) = 84 tasks`.
+
+The PVMMoE wrapper excludes TimesFM and therefore runs 68 tasks.
 
 ## Runtime assumption
 
@@ -286,6 +289,7 @@ To warm exact pinned revisions, use one consistent local Hub cache:
 export HF_HOME="$PWD/.cache/huggingface"
 hf download thuml/sundial-base-128m --revision 3212e42564493f520593e5414af4367fc4b49226
 hf download Maple728/TimeMoE-50M --revision 446753ee48ff3726d0606a81d0092d54acee995e
+hf download Maple728/TimeMoE-200M --revision 794591bfeb1225fdf742cec0f4c71f20c3f3b87e
 hf download amazon/chronos-2 --revision 29ec3766d36d6f73f0696f85560a422f50e8498c
 hf download NX-AI/TiRex --revision 63c740922493f5fbe60b277609ec62babfba2762
 hf download google/timesfm-2.5-200m-transformers --revision 5a9806b9b291fad9233b5249d88263f1846304d3
@@ -327,3 +331,20 @@ missing, changed, or tampered artifact is rerun.
 The historical result-directory component `foundation_models` is retained for
 resume compatibility.  It is a result path only, not a Python package or
 implementation directory.
+
+## Current environment limitation
+
+The specified `/opt/data/private/penv/time/bin/python` remains the Python
+3.8.18 legacy profile with Torch 2.3.1, Transformers 4.46.2, and PEFT
+0.13.2; it cannot host all registered modern backends.
+
+Verified on 2026-08-28 with `.venv/tsfm-modern` (Python 3.11.0, torch
+2.4.1 with CUDA 12.1 runtime, Transformers 5.3.0, PEFT 0.18.1,
+chronos-forecasting 2.3.1, and tirex-ts 1.4.2), the canonical
+real-checkpoint CUDA smoke matrix ran across two NVIDIA RTX 4090 GPUs and
+completed `68/68 PASS`.  The verified checkpoint pins were
+`thuml/sundial-base-128m@3212e42564493f520593e5414af4367fc4b49226`,
+`Maple728/TimeMoE-50M@446753ee48ff3726d0606a81d0092d54acee995e`,
+`amazon/chronos-2@29ec3766d36d6f73f0696f85560a422f50e8498c`,
+`NX-AI/TiRex@63c740922493f5fbe60b277609ec62babfba2762`, and
+`google/timesfm-2.5-200m-transformers@5a9806b9b291fad9233b5249d88263f1846304d3`.

@@ -42,7 +42,8 @@ export HF_HOME
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 if [[ -n "${TSFM_WEIGHTS_ROOT:-}" || -n "${SUNDIAL_WEIGHT_DIR:-}" || \
-      -n "${TIMEMOE_WEIGHT_DIR:-}" || -n "${CHRONOS2_WEIGHT_DIR:-}" || \
+      -n "${TIMEMOE_WEIGHT_DIR:-}" || -n "${TIMEMOE_200M_WEIGHT_DIR:-}" || \
+      -n "${CHRONOS2_WEIGHT_DIR:-}" || \
       -n "${TIREX_WEIGHT_DIR:-}" || -n "${TIMESFM_WEIGHT_DIR:-}" ]]; then
     "$PYTHON" scripts/check_local_weights.py --verify-sha256 --json \
         | tee "$RESULTS_ROOT/local_weights.json"

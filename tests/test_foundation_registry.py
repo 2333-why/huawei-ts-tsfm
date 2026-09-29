@@ -10,7 +10,14 @@ import pytest
 def test_registry_exposes_fixed_catalog_and_immutable_specs():
     from models import MODEL_NAMES, RUN_MODES, get_model_spec
 
-    assert MODEL_NAMES == ("Sundial", "TimeMoE", "Chronos2", "TiRex", "TimesFM")
+    assert MODEL_NAMES == (
+        "Sundial",
+        "TimeMoE",
+        "TimeMoE200M",
+        "Chronos2",
+        "TiRex",
+        "TimesFM",
+    )
     assert RUN_MODES == ("zero_shot", "adapter", "full", "last_layer")
 
     expected = {
@@ -23,6 +30,12 @@ def test_registry_exposes_fixed_catalog_and_immutable_specs():
         "TimeMoE": {
             "model_id": "Maple728/TimeMoE-50M",
             "revision": "446753ee48ff3726d0606a81d0092d54acee995e",
+            "entrypoint": "models.TimeMoE:TimeMoEBackend",
+            "last_layer_selector": "lm_heads",
+        },
+        "TimeMoE200M": {
+            "model_id": "Maple728/TimeMoE-200M",
+            "revision": "794591bfeb1225fdf742cec0f4c71f20c3f3b87e",
             "entrypoint": "models.TimeMoE:TimeMoEBackend",
             "last_layer_selector": "lm_heads",
         },
@@ -87,7 +100,10 @@ def test_registry_import_has_no_optional_dependency_side_effect():
 def test_unknown_model_name_reports_available_catalog():
     from models import get_model_spec
 
-    with pytest.raises(ValueError, match="Sundial.*TimeMoE.*Chronos2.*TiRex.*TimesFM"):
+    with pytest.raises(
+        ValueError,
+        match="Sundial.*TimeMoE.*TimeMoE200M.*Chronos2.*TiRex.*TimesFM",
+    ):
         get_model_spec("unknown")
 
 
@@ -96,6 +112,7 @@ def test_unknown_model_name_reports_available_catalog():
     [
         ("Sundial", ("zero_shot", "adapter", "full", "last_layer")),
         ("TimeMoE", ("zero_shot", "adapter", "full", "last_layer")),
+        ("TimeMoE200M", ("zero_shot", "adapter", "full", "last_layer")),
         ("Chronos2", ("zero_shot", "adapter", "full", "last_layer")),
         ("TiRex", ("zero_shot",)),
         ("TimesFM", ("zero_shot", "adapter", "full", "last_layer")),

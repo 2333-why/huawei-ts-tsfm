@@ -10,6 +10,7 @@
 |---|---|---|---|
 | `Sundial` | `thuml/sundial-base-128m` | <https://huggingface.co/thuml/sundial-base-128m/tree/3212e42564493f520593e5414af4367fc4b49226> | `model.safetensors` (513,341,448 bytes) |
 | `TimeMoE` | `Maple728/TimeMoE-50M` | <https://huggingface.co/Maple728/TimeMoE-50M/tree/446753ee48ff3726d0606a81d0092d54acee995e> | `model.safetensors` (226,760,264 bytes) |
+| `TimeMoE200M` | `Maple728/TimeMoE-200M` | <https://huggingface.co/Maple728/TimeMoE-200M/tree/794591bfeb1225fdf742cec0f4c71f20c3f3b87e> | `model.safetensors` (906,450,104 bytes) |
 | `Chronos2` | `amazon/chronos-2` | <https://huggingface.co/amazon/chronos-2/tree/29ec3766d36d6f73f0696f85560a422f50e8498c> | `model.safetensors` (477,930,472 bytes) |
 | `TiRex` | `NX-AI/TiRex` | <https://huggingface.co/NX-AI/TiRex/tree/63c740922493f5fbe60b277609ec62babfba2762> | `model.ckpt` (141,230,262 bytes) |
 | `TimesFM` | `google/timesfm-2.5-200m-transformers` | <https://huggingface.co/google/timesfm-2.5-200m-transformers/tree/5a9806b9b291fad9233b5249d88263f1846304d3> | `model.safetensors` (925,187,448 bytes) |
@@ -28,7 +29,14 @@ tsfm_weights/
 │   ├── flow_loss.py
 │   ├── ts_generation_mixin.py
 │   └── model.safetensors
-├── TimeMoE/
+├── TimeMoE-50M/
+│   ├── config.json
+│   ├── generation_config.json
+│   ├── configuration_time_moe.py
+│   ├── modeling_time_moe.py
+│   ├── ts_generation_mixin.py
+│   └── model.safetensors
+├── TimeMoE-200M/
 │   ├── config.json
 │   ├── generation_config.json
 │   ├── configuration_time_moe.py
@@ -45,11 +53,11 @@ tsfm_weights/
     └── model.safetensors
 ```
 
-五个大权重合计 2,284,449,894 bytes，约 2.28 GB（2.13 GiB）。其他 README、图片和 TiRex ONNX 文件不是当前 PyTorch 实验所必需。
+六个大权重合计 3,190,899,998 bytes，约 3.19 GB（2.97 GiB）。其他 README、图片和 TiRex ONNX 文件不是当前 PyTorch 实验所必需。
 
 ## 服务器上指定桶挂载目录
 
-若五个子目录都在同一根目录：
+若六个子目录都在同一根目录：
 
 ```bash
 export TSFM_WEIGHTS_ROOT=/mnt/your-bucket/tsfm_weights
@@ -59,11 +67,12 @@ export TRANSFORMERS_OFFLINE=1
 python scripts/check_local_weights.py --verify-sha256
 ```
 
-如果五个模型在不同位置，分别设置（优先级高于 `TSFM_WEIGHTS_ROOT`）：
+如果六个权重在不同位置，分别设置（优先级高于 `TSFM_WEIGHTS_ROOT`）：
 
 ```bash
 export SUNDIAL_WEIGHT_DIR=/mnt/bucket-a/Sundial
-export TIMEMOE_WEIGHT_DIR=/mnt/bucket-a/TimeMoE
+export TIMEMOE_WEIGHT_DIR=/mnt/bucket-a/TimeMoE-50M
+export TIMEMOE_200M_WEIGHT_DIR=/mnt/bucket-a/TimeMoE-200M
 export CHRONOS2_WEIGHT_DIR=/mnt/bucket-b/Chronos2
 export TIREX_WEIGHT_DIR=/mnt/bucket-b/TiRex
 export TIMESFM_WEIGHT_DIR=/mnt/bucket-c/TimesFM
@@ -78,7 +87,8 @@ export TIMESFM_WEIGHT_DIR=/mnt/bucket-c/TimesFM
 ```text
 /data/PVMMoE/PRETRAINED_MODELS/sundial-base-128m
 /data/PVMMoE/PRETRAINED_MODELS/chronos2
-/data/PVMMoE/PRETRAINED_MODELS/TimeMoE
+/data/PVMMoE/PRETRAINED_MODELS/TimeMoE-50M
+/data/PVMMoE/PRETRAINED_MODELS/TimeMoE-200M
 /data/PVMMoE/PRETRAINED_MODELS/TiRex
 /data/PVMMoE/PRETRAINED_MODELS/TimesFM
 ```
@@ -90,7 +100,22 @@ source scripts/use_pvmoe_local_weights.sh
 python scripts/check_local_weights.py --verify-sha256
 ```
 
-TimeMoE、TiRex 和 TimesFM 的可解压权重包发布在：
-<https://github.com/2333-why/Huawei-ts-pure-ts/releases/tag/tsfm-weights-v1>
+当前 PVMMoE 完整实验使用 Sundial、TimeMoE-50M、TimeMoE-200M、Chronos2 和 TiRex，暂时不加载或测试 TimesFM。
 
-解压三个 ZIP 后，将得到 `TimeMoE/`、`TiRex/` 和 `TimesFM/` 三个目录，直接上传到 `/data/PVMMoE/PRETRAINED_MODELS/` 即可。
+在已激活的 Python 环境中执行一条命令，将使用 8 张 GPU 运行全部 68 个任务：
+
+```bash
+PYTHON="$(which python)" \
+GPUS="0 1 2 3 4 5 6 7" \
+RESUME=1 \
+bash scripts/run_pvmoe_5models_8gpu.sh
+```
+
+脚本会先校验五个权重的文件、大小和 SHA-256，再校验数据、环境和 GPU。任何预检失败都不会开始实验。全部通过后会生成：
+
+```text
+results_foundation_5models_8gpu/run_summary.tsv
+results_foundation_5models_8gpu/results_summary.md
+```
+
+`RESUME=1` 会严格校验已有产物，只跳过身份、数据指纹和文件 hash 全部一致的成功任务。

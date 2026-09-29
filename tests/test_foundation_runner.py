@@ -295,7 +295,14 @@ except SystemExit as exc:
         capture_output=True,
     )
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.splitlines() == ["Sundial", "TimeMoE", "Chronos2", "TiRex", "TimesFM"]
+    assert completed.stdout.splitlines() == [
+        "Sundial",
+        "TimeMoE",
+        "TimeMoE200M",
+        "Chronos2",
+        "TiRex",
+        "TimesFM",
+    ]
     assert completed.stderr == ""
 
 

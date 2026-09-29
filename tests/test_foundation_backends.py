@@ -568,6 +568,25 @@ def test_timemoe_backend_uses_native_no_cache_chunks_for_transformers_compatibil
     assert torch.allclose(output, expected)
 
 
+def test_timemoe_200m_backend_uses_its_own_pinned_checkpoint(monkeypatch):
+    loaded = _TimeMoECompatLoadedModel()
+    loader_calls = _install_fake_transformers(monkeypatch, loaded)
+
+    from models.factory import build_backend
+    from models.registry import get_model_spec
+
+    backend = build_backend("TimeMoE200M", "cpu")
+    spec = get_model_spec("TimeMoE200M")
+
+    assert backend.model_name == "TimeMoE200M"
+    assert loader_calls == [
+        (
+            spec.model_id,
+            {"revision": spec.revision, "trust_remote_code": True},
+        )
+    ]
+
+
 def test_timemoe_backend_overrides_revision_and_crops_last_horizon(monkeypatch):
     history = torch.tensor([[[2.0], [4.0], [6.0]]])
     loaded = _TimeMoECompatLoadedModel()
