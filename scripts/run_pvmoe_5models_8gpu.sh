@@ -16,23 +16,34 @@ export FOUNDATION_MODELS="Sundial TimeMoE TimeMoE200M Chronos2 TiRex"
 export SKIPPD_PARQUET="${SKIPPD_PARQUET:-/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/Luoyang-Unified_format-V1.parquet}"
 export PVOD_PARQUET="${PVOD_PARQUET:-/data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/YLJ-Unified_format.parquet}"
 export OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT_DIR/results_foundation_5models_8gpu}"
+RECENT_CONFIG_DIR="$OUTPUT_ROOT/recent_four_months_configs"
+export SKIPPD_CONFIG="$RECENT_CONFIG_DIR/luoyang_recent_four_months.json"
+export PVOD_CONFIG="${PVOD_CONFIG:-$ROOT_DIR/configs/datasets/pvod_station00_ylj.yaml}"
 export SUMMARY_PATH="${SUMMARY_PATH:-$OUTPUT_ROOT/run_summary.tsv}"
 export RESUME="${RESUME:-1}"
 export SMOKE=0
 
 mkdir -p "$OUTPUT_ROOT"
 
-echo "[1/3] 校验五个本地权重"
+echo "[1/4] 检查 Luoyang 数据范围并生成前两月训练、后两月测试配置"
+"$PYTHON" scripts/prepare_recent_four_months.py \
+  --luoyang-config "$ROOT_DIR/configs/datasets/skippd_luoyang.json" \
+  --luoyang-parquet "$SKIPPD_PARQUET" \
+  --output-dir "$RECENT_CONFIG_DIR"
+
+echo "YLJ 保持原配置不变: $PVOD_CONFIG"
+
+echo "[2/4] 校验五个本地权重"
 "$PYTHON" scripts/check_local_weights.py \
   --models Sundial TimeMoE TimeMoE200M Chronos2 TiRex \
   --verify-sha256 --json | tee "$OUTPUT_ROOT/local_weights.json"
 
-echo "[2/3] 校验环境、数据、GPU 与五模型依赖"
+echo "[3/4] 校验环境、数据、GPU 与五模型依赖"
 "$PYTHON" scripts/check_foundation_environment.py \
   --offline --models Sundial TimeMoE TimeMoE200M Chronos2 TiRex --json \
   | tee "$OUTPUT_ROOT/preflight.json"
 
-echo "[3/3] 运行 8 GPU 完整 68 任务实验矩阵"
+echo "[4/4] 运行 8 GPU 完整 68 任务实验矩阵"
 bash scripts/run_all_foundation_models_8gpu.sh
 
 "$PYTHON" scripts/foundation_results_to_md.py \

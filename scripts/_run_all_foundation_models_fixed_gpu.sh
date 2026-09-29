@@ -35,6 +35,8 @@ RESUME="${RESUME:-0}"
 GPUS="${GPUS:-$DEFAULT_GPUS}"
 SKIPPD_PARQUET="${SKIPPD_PARQUET:-}"
 PVOD_PARQUET="${PVOD_PARQUET:-}"
+SKIPPD_CONFIG="${SKIPPD_CONFIG:-$ROOT_DIR/configs/datasets/skippd_luoyang.json}"
+PVOD_CONFIG="${PVOD_CONFIG:-$ROOT_DIR/configs/datasets/pvod_station00_ylj.yaml}"
 FOUNDATION_MODELS="${FOUNDATION_MODELS:-}"
 
 if [[ "$SMOKE" != "0" && "$SMOKE" != "1" ]]; then
@@ -267,11 +269,11 @@ PY
 }
 
 if ! prepare_runtime_config \
-    "skippd_luoyang" "$ROOT_DIR/configs/datasets/skippd_luoyang.json" "$SKIPPD_PARQUET"; then
+    "skippd_luoyang" "$SKIPPD_CONFIG" "$SKIPPD_PARQUET"; then
     exit 2
 fi
 if ! prepare_runtime_config \
-    "pvod_station00_ylj" "$ROOT_DIR/configs/datasets/pvod_station00_ylj.yaml" "$PVOD_PARQUET"; then
+    "pvod_station00_ylj" "$PVOD_CONFIG" "$PVOD_PARQUET"; then
     exit 2
 fi
 
