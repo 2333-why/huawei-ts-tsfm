@@ -1,6 +1,6 @@
 dataset: YLJParquet
 paths:
-  parquet_file: /data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/YLJ-Unified_format.parquet
+  parquet_file: /data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/YLJ-Unified_format-with_DNI_DHI.parquet
   results_root: ./results_ylj
 fields:
   timestamp: timestamp

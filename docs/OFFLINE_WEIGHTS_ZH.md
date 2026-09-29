@@ -115,12 +115,14 @@ bash scripts/run_pvmoe_5models_8gpu.sh
 后两个月测试。YLJ 没有扩充，继续严格使用
 `configs/datasets/pvod_station00_ylj.yaml` 中原来的时间范围，不做重新划分。
 
-脚本会先写出 Luoyang 范围报告和运行配置，再校验五个权重的文件、大小和 SHA-256，
-最后校验数据、环境和 GPU。任何预检失败都不会开始实验。全部通过后会生成：
+脚本会实际读取两个 Parquet，检查列、时间戳、有效功率和 train/val/test 样本数，
+再生成 Luoyang 新切分及 YLJ 原切分配置。随后校验五个权重、环境和 GPU。
+任何预检失败都不会开始实验。全部通过后会生成：
 
 ```text
-results_foundation_5models_8gpu/recent_four_months_configs/data_range_report.json
-results_foundation_5models_8gpu/recent_four_months_configs/luoyang_recent_four_months.json
+results_foundation_5models_8gpu/dataset_preflight/dataset_preflight.json
+results_foundation_5models_8gpu/dataset_preflight/luoyang_recent_four_months.json
+results_foundation_5models_8gpu/dataset_preflight/ylj_original_split.json
 results_foundation_5models_8gpu/run_summary.tsv
 results_foundation_5models_8gpu/results_summary.md
 ```

@@ -21,8 +21,8 @@ python --version
 脚本已经内置下列服务器路径：
 
 ```text
-/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/Luoyang-Unified_format-V1.parquet
-/data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/YLJ-Unified_format.parquet
+/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/Luoyang-Unified_format-V1-with_DNI_DHI.parquet
+/data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/YLJ-Unified_format-with_DNI_DHI.parquet
 
 /data/PVMMoE/PRETRAINED_MODELS/sundial-base-128m
 /data/PVMMoE/PRETRAINED_MODELS/TimeMoE-50M
@@ -33,26 +33,7 @@ python --version
 
 如路径没有变化，不需要再设置环境变量。
 
-## 3. 单独检查 Luoyang 数据范围
-
-只有 Luoyang 数据进行了扩充。以下命令自动取最新四个自然月，前两个月训练、后两个月
-测试；YLJ 继续使用原配置，不重新划分。
-
-```bash
-python scripts/prepare_recent_four_months.py \
-  --luoyang-parquet /data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/Luoyang-Unified_format-V1.parquet \
-  --output-dir "$PWD/generated_configs/recent_four_months"
-```
-
-范围报告位于：
-
-```text
-generated_configs/recent_four_months/data_range_report.json
-```
-
-若要求 Luoyang 四个月内一个时间点都不能缺少，添加 `--strict-grid`。
-
-## 4. 一键运行完整 68 项实验
+## 3. 一键检查数据并运行完整 68 项实验
 
 ```bash
 PYTHON="$(which python)" \
@@ -64,18 +45,22 @@ bash scripts/run_pvmoe_5models_8gpu.sh
 
 该入口会自动完成：
 
-1. 读取 Luoyang 完整数据范围并生成“前两月训练、后两月测试”配置；
-2. 保持 YLJ 原始时间划分；
-3. 校验五个本地权重的文件、大小和 SHA-256；
-4. 校验 Python、依赖、数据和 8 张 GPU；
-5. 运行 68 项实验；
-6. 汇总全部 `metrics.json` 到 Markdown。
+1. 实际打开两个 Parquet，检查必需列、时间戳、重复值、有效功率和三个切分的样本数；
+2. 生成 Luoyang“最新四个月：前两月训练、后两月测试”配置；
+3. 保持 YLJ 原始时间划分；
+4. 校验五个本地权重的文件、大小和 SHA-256；
+5. 校验 Python、依赖、数据和 8 张 GPU；
+6. 运行 68 项实验；
+7. 汇总全部 `metrics.json` 到 Markdown。
 
-## 5. 输出文件
+任一步失败都会立即退出，不会启动后续训练；不需要先单独执行数据检查命令。
+
+## 4. 输出文件
 
 ```text
-results_foundation_5models_8gpu/recent_four_months_configs/data_range_report.json
-results_foundation_5models_8gpu/recent_four_months_configs/luoyang_recent_four_months.json
+results_foundation_5models_8gpu/dataset_preflight/dataset_preflight.json
+results_foundation_5models_8gpu/dataset_preflight/luoyang_recent_four_months.json
+results_foundation_5models_8gpu/dataset_preflight/ylj_original_split.json
 results_foundation_5models_8gpu/local_weights.json
 results_foundation_5models_8gpu/preflight.json
 results_foundation_5models_8gpu/run_summary.tsv
@@ -85,7 +70,7 @@ results_foundation_5models_8gpu/results_summary.md
 `RESUME=1` 会验证模型身份、运行模式、数据指纹和结果文件 hash；只有全部一致的成功任务
 才会跳过。若要强制全部重新运行，设置 `RESUME=0`。
 
-## 6. 自定义路径（可选）
+## 5. 自定义路径（可选）
 
 ```bash
 PRETRAINED_MODELS_ROOT=/新的权重根目录 \
