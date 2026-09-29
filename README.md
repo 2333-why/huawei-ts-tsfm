@@ -64,9 +64,9 @@ four modes plus one TiRex zero-shot mode:
 
 The PVMMoE wrapper excludes TimesFM and therefore runs 68 tasks.
 
-Only Luoyang uses the expanded data range: the wrapper selects its latest four
-calendar months, using the first two for training and the last two for testing.
-YLJ keeps the original split in `configs/datasets/pvod_station00_ylj.yaml`.
+Luoyang keeps the previously verified fixed split: 2026-04-05 through
+2026-05-11 for training/validation and 2026-05-11 through 2026-06-12 for
+testing. YLJ keeps the original split in `configs/datasets/pvod_station00_ylj.yaml`.
 
 ## Runtime assumption
 

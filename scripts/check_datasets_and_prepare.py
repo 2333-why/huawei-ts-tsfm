@@ -22,9 +22,6 @@ from data_provider.power_only import (  # noqa: E402
     PowerOnlyParquetDataset,
     load_power_only_config,
 )
-from scripts.prepare_recent_four_months import prepare_dataset  # noqa: E402
-
-
 DEFAULT_LUOYANG = Path(
     "/data/PVMMoE/DATA/01-Solar/Luoyang-XS/Benchmark_V1/"
     "Luoyang-Unified_format-V1-with_DNI_DHI.parquet"
@@ -33,6 +30,11 @@ DEFAULT_YLJ = Path(
     "/data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/"
     "YLJ-Unified_format-with_DNI_DHI.parquet"
 )
+LUOYANG_FIXED_TIME = {
+    "train_start_timestamp": "2026-04-05 00:00:00",
+    "test_start_timestamp": "2026-05-11 00:00:00",
+    "test_end_exclusive_timestamp": "2026-06-12 00:00:00",
+}
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -97,11 +99,29 @@ def _inspect_content(name: str, parquet_path: Path, config_path: Path) -> dict[s
 
 
 def _copy_config_with_parquet(
-    base_config_path: Path, parquet_path: Path, output_path: Path
-) -> None:
+    base_config_path: Path,
+    parquet_path: Path,
+    output_path: Path,
+    *,
+    time_overrides: dict[str, str] | None = None,
+) -> dict[str, Any]:
     config = copy.deepcopy(load_power_only_config(base_config_path))
     config["paths"]["parquet_file"] = str(parquet_path.expanduser().resolve())
+    if time_overrides:
+        config["time"].update(time_overrides)
     _write_json(output_path, config)
+    time_config = config["time"]
+    return {
+        "config_file": str(output_path.resolve()),
+        "train_validation_range": [
+            str(time_config["train_start_timestamp"]),
+            str(time_config["test_start_timestamp"]),
+        ],
+        "test_range": [
+            str(time_config["test_start_timestamp"]),
+            str(time_config["test_end_exclusive_timestamp"]),
+        ],
+    }
 
 
 def _validate_splits(
@@ -147,19 +167,20 @@ def run_preflight(
 ) -> dict[str, Any]:
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    luoyang_output = output_dir / "luoyang_recent_four_months.json"
+    luoyang_output = output_dir / "luoyang_one_month_train_one_month_test.json"
     ylj_output = output_dir / "ylj_original_split.json"
 
     luoyang_content = _inspect_content("luoyang", luoyang_parquet, luoyang_config)
     ylj_content = _inspect_content("ylj", ylj_parquet, ylj_config)
-    luoyang_range = prepare_dataset(
-        "luoyang",
+    # Keep the previously verified fixed Luoyang split from the base config.
+    # The sequence-format candidate is deliberately not used by this row-wise loader.
+    luoyang_range = _copy_config_with_parquet(
         luoyang_config,
         luoyang_parquet,
         luoyang_output,
-        strict_grid=strict_grid,
+        time_overrides=LUOYANG_FIXED_TIME,
     )
-    _copy_config_with_parquet(ylj_config, ylj_parquet, ylj_output)
+    ylj_range = _copy_config_with_parquet(ylj_config, ylj_parquet, ylj_output)
 
     luoyang_splits = _validate_splits(
         "luoyang", luoyang_output, ((48, 1), (96, 48))
@@ -168,15 +189,15 @@ def run_preflight(
     report = {
         "status": "PASS",
         "policy": (
-            "Luoyang latest 4 calendar months: first 2 train and last 2 test; "
-            "YLJ keeps its configured split"
+            "Luoyang keeps the verified one-month train/validation plus one-month "
+            "test split from its base config; YLJ keeps its configured split"
         ),
         "datasets": [
             {**luoyang_content, **luoyang_range, **luoyang_splits},
             {
                 **ylj_content,
                 **ylj_splits,
-                "config_file": str(ylj_output),
+                **ylj_range,
                 "split_policy": "unchanged from base config",
             },
         ],
@@ -202,7 +223,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir", type=Path, default=REPO_ROOT / "generated_configs/preflight"
     )
-    parser.add_argument("--strict-grid", action="store_true")
+    parser.add_argument(
+        "--strict-grid",
+        action="store_true",
+        help="retained for CLI compatibility; split validation always checks exact windows",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 

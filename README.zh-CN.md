@@ -57,9 +57,10 @@ TiRex zero-shot 模式：
 
 PVMMoE 一键脚本排除 TimesFM，因此运行 68 个任务。
 
-数据范围策略为：只有 Luoyang 使用扩充后的最新四个自然月，前两个月训练、后两个月
-测试；YLJ 保持 `configs/datasets/pvod_station00_ylj.yaml` 中的原始划分不变。
-`scripts/run_pvmoe_5models_8gpu.sh` 会自动检查 Luoyang 的完整数据范围并生成运行配置。
+数据范围策略为：Luoyang 恢复经过验证的固定切分，训练/验证使用
+`2026-04-05～2026-05-11`，测试使用 `2026-05-11～2026-06-12`；YLJ 保持
+`configs/datasets/pvod_station00_ylj.yaml` 中的原始划分不变。
+`scripts/run_pvmoe_5models_8gpu.sh` 会自动检查两份数据内容并生成运行配置。
 
 ## 运行环境约定
 

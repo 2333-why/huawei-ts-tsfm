@@ -16,6 +16,8 @@ def _write_fixture(
     start: str,
     end: str,
     test_start: str,
+    train_start: str | None = None,
+    test_end_exclusive: str | None = None,
 ) -> tuple[Path, Path]:
     timestamps = pd.date_range(start, f"{end} 23:00:00", freq="1h")
     parquet_path = tmp_path / f"{name}-with_DNI_DHI.parquet"
@@ -33,11 +35,10 @@ def _write_fixture(
         "time": {
             "sampling_interval_minutes": 60,
             "forecast_step_minutes": 60,
-            "train_start_timestamp": start,
+            "train_start_timestamp": train_start or start,
             "test_start_timestamp": test_start,
-            "test_end_exclusive_timestamp": (
-                pd.Timestamp(end) + pd.Timedelta(days=1)
-            ).isoformat(sep=" "),
+            "test_end_exclusive_timestamp": test_end_exclusive
+            or (pd.Timestamp(end) + pd.Timedelta(days=1)).isoformat(sep=" "),
             "validation_fraction": 0.15,
         },
         "power": {"power_scale": 1.0, "rated_power": 1.0},
@@ -56,7 +57,14 @@ def _write_fixture(
 
 def test_preflight_reads_extra_columns_and_validates_all_splits(tmp_path):
     luoyang_parquet, luoyang_config = _write_fixture(
-        tmp_path, "luoyang", "final_power", "2026-01-01", "2026-06-30", "2026-05-01"
+        tmp_path,
+        "luoyang",
+        "final_power",
+        "2026-01-01",
+        "2026-06-30",
+        "2026-05-01",
+        train_start="2026-04-01",
+        test_end_exclusive="2026-06-01",
     )
     ylj_parquet, ylj_config = _write_fixture(
         tmp_path, "ylj", "observe_power", "2024-01-01", "2024-06-30", "2024-05-01"
@@ -79,6 +87,17 @@ def test_preflight_reads_extra_columns_and_validates_all_splits(tmp_path):
         for count in window["sample_counts"].values()
     )
     assert (tmp_path / "output/dataset_preflight.json").is_file()
+    luoyang_generated = json.loads(
+        (
+            tmp_path / "output/luoyang_one_month_train_one_month_test.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert luoyang_generated["time"]["train_start_timestamp"] == "2026-04-05 00:00:00"
+    assert luoyang_generated["time"]["test_start_timestamp"] == "2026-05-11 00:00:00"
+    assert (
+        luoyang_generated["time"]["test_end_exclusive_timestamp"]
+        == "2026-06-12 00:00:00"
+    )
     ylj_generated = json.loads(
         (tmp_path / "output/ylj_original_split.json").read_text(encoding="utf-8")
     )
@@ -88,7 +107,14 @@ def test_preflight_reads_extra_columns_and_validates_all_splits(tmp_path):
 
 def test_preflight_fails_before_configs_when_required_column_is_missing(tmp_path):
     luoyang_parquet, luoyang_config = _write_fixture(
-        tmp_path, "luoyang", "final_power", "2026-01-01", "2026-06-30", "2026-05-01"
+        tmp_path,
+        "luoyang",
+        "final_power",
+        "2026-01-01",
+        "2026-06-30",
+        "2026-05-01",
+        train_start="2026-04-01",
+        test_end_exclusive="2026-06-01",
     )
     ylj_parquet, ylj_config = _write_fixture(
         tmp_path, "ylj", "observe_power", "2024-01-01", "2024-06-30", "2024-05-01"
@@ -105,4 +131,6 @@ def test_preflight_fails_before_configs_when_required_column_is_missing(tmp_path
             output_dir=tmp_path / "output",
         )
 
-    assert not (tmp_path / "output/luoyang_recent_four_months.json").exists()
+    assert not (
+        tmp_path / "output/luoyang_one_month_train_one_month_test.json"
+    ).exists()

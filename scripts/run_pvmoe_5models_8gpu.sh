@@ -17,7 +17,7 @@ export SKIPPD_PARQUET="${SKIPPD_PARQUET:-/data/PVMMoE/DATA/01-Solar/Luoyang-XS/B
 export PVOD_PARQUET="${PVOD_PARQUET:-/data/PVMMoE/DATA/01-Solar/YLJ/Benchmark/YLJ-Unified_format-with_DNI_DHI.parquet}"
 export OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT_DIR/results_foundation_5models_8gpu}"
 DATASET_PREFLIGHT_DIR="$OUTPUT_ROOT/dataset_preflight"
-export SKIPPD_CONFIG="$DATASET_PREFLIGHT_DIR/luoyang_recent_four_months.json"
+export SKIPPD_CONFIG="$DATASET_PREFLIGHT_DIR/luoyang_one_month_train_one_month_test.json"
 export PVOD_CONFIG="$DATASET_PREFLIGHT_DIR/ylj_original_split.json"
 export SUMMARY_PATH="${SUMMARY_PATH:-$OUTPUT_ROOT/run_summary.tsv}"
 export RESUME="${RESUME:-1}"
@@ -25,7 +25,7 @@ export SMOKE=0
 
 mkdir -p "$OUTPUT_ROOT"
 
-echo "[1/4] 读取并检查两个数据集；自动生成 Luoyang 新切分和 YLJ 原切分配置"
+echo "[1/4] 读取并检查两个数据集；生成 Luoyang 原一月训练/一月测试和 YLJ 原切分配置"
 "$PYTHON" scripts/check_datasets_and_prepare.py \
   --luoyang-config "$ROOT_DIR/configs/datasets/skippd_luoyang.json" \
   --luoyang-parquet "$SKIPPD_PARQUET" \

@@ -46,7 +46,7 @@ bash scripts/run_pvmoe_5models_8gpu.sh
 该入口会自动完成：
 
 1. 实际打开两个 Parquet，检查必需列、时间戳、重复值、有效功率和三个切分的样本数；
-2. 生成 Luoyang“最新四个月：前两月训练、后两月测试”配置；
+2. 使用 Luoyang 原固定区间：训练/验证 `2026-04-05～2026-05-11`，测试 `2026-05-11～2026-06-12`；
 3. 保持 YLJ 原始时间划分；
 4. 校验五个本地权重的文件、大小和 SHA-256；
 5. 校验 Python、依赖、数据和 8 张 GPU；
@@ -59,7 +59,7 @@ bash scripts/run_pvmoe_5models_8gpu.sh
 
 ```text
 results_foundation_5models_8gpu/dataset_preflight/dataset_preflight.json
-results_foundation_5models_8gpu/dataset_preflight/luoyang_recent_four_months.json
+results_foundation_5models_8gpu/dataset_preflight/luoyang_one_month_train_one_month_test.json
 results_foundation_5models_8gpu/dataset_preflight/ylj_original_split.json
 results_foundation_5models_8gpu/local_weights.json
 results_foundation_5models_8gpu/preflight.json

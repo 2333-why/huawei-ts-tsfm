@@ -111,17 +111,17 @@ RESUME=1 \
 bash scripts/run_pvmoe_5models_8gpu.sh
 ```
 
-该入口会先读取扩充后的 Luoyang 数据实际范围，自动取最新四个自然月：前两个月训练、
-后两个月测试。YLJ 没有扩充，继续严格使用
+该入口会先读取 Luoyang 数据实际范围，并恢复原固定切分：训练/验证为
+`2026-04-05～2026-05-11`，测试为 `2026-05-11～2026-06-12`。YLJ 继续严格使用
 `configs/datasets/pvod_station00_ylj.yaml` 中原来的时间范围，不做重新划分。
 
 脚本会实际读取两个 Parquet，检查列、时间戳、有效功率和 train/val/test 样本数，
-再生成 Luoyang 新切分及 YLJ 原切分配置。随后校验五个权重、环境和 GPU。
+再生成 Luoyang 一个月训练/一个月测试及 YLJ 原切分配置。随后校验五个权重、环境和 GPU。
 任何预检失败都不会开始实验。全部通过后会生成：
 
 ```text
 results_foundation_5models_8gpu/dataset_preflight/dataset_preflight.json
-results_foundation_5models_8gpu/dataset_preflight/luoyang_recent_four_months.json
+results_foundation_5models_8gpu/dataset_preflight/luoyang_one_month_train_one_month_test.json
 results_foundation_5models_8gpu/dataset_preflight/ylj_original_split.json
 results_foundation_5models_8gpu/run_summary.tsv
 results_foundation_5models_8gpu/results_summary.md
